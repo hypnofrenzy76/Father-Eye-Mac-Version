@@ -1,0 +1,140 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        mavenCentral()
+        maven { url = 'https://plugins.gradle.org/m2/' }
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.+', changing: true
+        // shadowJar 7.1.2 published under the gradle-plugins-portal coords.
+        classpath 'gradle.plugin.com.github.johnrengelman:shadow:7.1.2'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'java-library'
+apply plugin: 'com.github.johnrengelman.shadow'
+
+version = project.findProperty('bridgeVersion') ?: '0.1.0'
+archivesBaseName = 'fathereye-bridge'
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(8)
+
+minecraft {
+    mappings channel: project.mappingsChannel, version: project.mappingsVersion
+
+    runs {
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                fathereye_bridge {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                fathereye_bridge {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'localMaven'
+        url = uri("${rootProject.projectDir}/local-maven")
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${forgeVersion}"
+
+    // mapcore is built locally; project dep gives us correct compile order.
+    // For runtime distribution alongside the mod JAR, it is also consumed via
+    // Forge JarJar in a later milestone (the library is shipped as a separate
+    // JAR in mods/, NOT shaded — Forge's classloader transforms shaded libs
+    // and breaks them).
+    implementation project(':mapcore')
+
+    // IPC + concurrency + serialization (Java 8 compatible)
+    implementation "net.java.dev.jna:jna-platform:${jnaVersion}"
+    implementation "org.jctools:jctools-core:${jctoolsVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:${jacksonVersion}"
+
+    // Mixin — Forge bundles MixinBootstrap at runtime; we only need the API at compile.
+    compileOnly "org.spongepowered:mixin:${mixinVersion}"
+}
+
+// We deploy the SHADED jar (Jackson + JNA + jctools + mapcore bundled in)
+// because Forge's TransformingClassLoader does not see the build's
+// `implementation` classpath at runtime — only classes inside the mod
+// jar itself. A NoClassDefFoundError on com.fasterxml.jackson.databind.JsonNode
+// at FMLServerStartingEvent is the symptom; shadowJar fixes it by
+// embedding the libs directly. We do NOT relocate packages: relocation
+// would require also moving JNA's bundled native dispatcher (jnidispatch.dll
+// at com/sun/jna/win32-x86-64/jnidispatch.dll) and other Jackson resources,
+// which adds complexity for no real benefit on a single-user server where
+// no other mod uses these libraries.
+jar {
+    enabled = false
+}
+
+shadowJar {
+    archiveClassifier = ''
+    archiveBaseName = 'fathereye-bridge'
+
+    dependencies {
+        include(dependency('com.fasterxml.jackson.core:.*'))
+        include(dependency('com.fasterxml.jackson.dataformat:.*'))
+        include(dependency('net.java.dev.jna:.*'))
+        include(dependency('org.jctools:.*'))
+        include(dependency('io.fathereye:.*'))
+    }
+
+    // Drop EVERY multi-release class file. Jackson 2.16.x ships per-version
+    // overrides under META-INF/versions/{9,11,17,21}/* with class file major
+    // 53/55/61/65; SpecialSource (ForgeGradle's reobf bytecode rewriter)
+    // chokes on anything past Java 17 with "Unsupported class file major
+    // version". The server runs on Java 8, so the fallback baseline classes
+    // are what's used at runtime — losing the per-version overrides is
+    // harmless for this use case. Also strip module-info.class which Forge's
+    // TransformingClassLoader would reject.
+    exclude 'module-info.class'
+    exclude 'META-INF/versions/**'
+
+    manifest {
+        attributes([
+            "Specification-Title"     : "Father Eye Bridge",
+            "Specification-Vendor"    : "Father Eye",
+            "Specification-Version"   : "1",
+            "Implementation-Title"    : project.name,
+            "Implementation-Version"  : project.version,
+            "Implementation-Vendor"   : "Father Eye",
+            "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+// Wire reobf so it runs on the shaded jar. ForgeGradle 5.1's reobf extension
+// is iterable by jar-task name; declaring `shadowJar {}` registers a
+// reobfShadowJar task that rewrites Mojang -> SRG names on the fat jar
+// in place. finalizedBy guarantees it runs every time shadowJar runs,
+// even when shadowJar is invoked directly by an IDE or a test target —
+// without it, a Mojang-named jar slips out and the server crashes with
+// NoSuchMethodError on the first ServerTickEvent.
+reobf {
+    shadowJar {}
+}
+
+shadowJar.finalizedBy reobfShadowJar
+build.dependsOn reobfShadowJar

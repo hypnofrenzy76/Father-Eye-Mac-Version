@@ -1,0 +1,57 @@
+<configuration>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <!-- Logback substitutes ${LOCALAPPDATA} from env vars and system
+             properties. The :- default applies if LOCALAPPDATA is unset. -->
+        <file>${LOCALAPPDATA:-${user.home}}/FatherEye/panel.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <fileNamePattern>${LOCALAPPDATA:-${user.home}}/FatherEye/panel.%i.log.gz</fileNamePattern>
+            <minIndex>1</minIndex>
+            <maxIndex>5</maxIndex>
+        </rollingPolicy>
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>5MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger - %msg%n%ex</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Pnl-48 (2026-04-26): root level bumped from INFO to DEBUG so
+         panel.log captures everything FatherEye does during boot,
+         IPC handshake, state transitions, etc. The user reported the
+         lack of diagnostic detail when investigating why a server
+         "wasn't starting" (turned out to be the Pnl-43 deadlock).
+         Logback file appender rotates at 5 MiB so disk usage stays
+         bounded even at DEBUG. To dial back, change to INFO here or
+         override per-logger below. -->
+    <root level="DEBUG">
+        <appender-ref ref="STDOUT" />
+        <appender-ref ref="FILE" />
+    </root>
+
+    <!-- Always-DEBUG FatherEye loggers (kept for clarity even though
+         root is also DEBUG; harmless redundancy). -->
+    <logger name="FatherEye-Panel" level="DEBUG"/>
+    <logger name="FatherEye" level="DEBUG"/>
+    <logger name="FatherEye-IPC" level="DEBUG"/>
+    <logger name="FatherEye-ServerLauncher" level="DEBUG"/>
+    <logger name="FatherEye-Watchdog" level="DEBUG"/>
+    <logger name="FatherEye-PipeReader" level="DEBUG"/>
+    <logger name="FatherEye-Eval" level="DEBUG"/>
+
+    <!-- Quiet down third-party noise so the panel log stays focused
+         on FatherEye. JDK / SQLite / JNA tend to emit a lot of
+         FINER/FINEST under DEBUG; cap them at INFO. -->
+    <logger name="org.sqlite" level="INFO"/>
+    <logger name="com.sun.jna" level="INFO"/>
+    <logger name="javafx" level="INFO"/>
+    <logger name="com.fasterxml" level="INFO"/>
+
+</configuration>

@@ -1,0 +1,53 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+version = project.findProperty('mapcoreVersion') ?: '0.1.0'
+archivesBaseName = 'fathereye-mapcore'
+
+// mapcore is consumed by Forge mods running on Java 8. We build with JDK 17
+// but the `--release 8` flag forbids any Java 9+ symbol from leaking in.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+    withSourcesJar()
+}
+
+compileJava {
+    options.release = 8
+}
+compileTestJava {
+    options.release = 8
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mapcore(MavenPublication) {
+            from components.java
+            groupId = 'io.fathereye'
+            artifactId = 'mapcore'
+            version = project.version
+        }
+    }
+    repositories {
+        maven {
+            name = 'localMaven'
+            url = uri("${rootProject.projectDir}/local-maven")
+        }
+    }
+}

@@ -1,0 +1,22 @@
+allprojects {
+    group = 'io.fathereye'
+    // Pnl-41 (2026-04-26): force UTF-8 source encoding for every
+    // subproject's compileJava and compileTestJava. Without this,
+    // javac falls back to the platform default (Windows-1252 on US
+    // Windows), which silently miscompiles non-ASCII literals: a
+    // UTF-8 em-dash in source (bytes E2 80 94) gets decoded as the
+    // three Windows-1252 characters "â€”" (visually
+    // "â€”") and that mojibake then propagates into compiled
+    // strings -- including JavaFX dialog titles. Discovered via the
+    // user-visible "Father Eye â€” Low TPS" pop-up.
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}
+
+// All subprojects configure themselves in their own build.gradle.
+// Per-subproject toolchains:
+//   mapcore  Java 17 toolchain compiling --release 8
+//   bridge   Java 8 toolchain (ForgeGradle 5.1)
+//   map      Java 8 toolchain (ForgeGradle 5.1)
+//   panel    Java 17 toolchain (JavaFX desktop)

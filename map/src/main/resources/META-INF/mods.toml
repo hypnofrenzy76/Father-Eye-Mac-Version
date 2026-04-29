@@ -1,0 +1,39 @@
+modLoader="javafml"
+loaderVersion="[36,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="fathereye_map"
+version="${file.jarVersion}"
+displayName="Father Eye Map"
+authors="Father Eye"
+description='''
+In-game admin map GUI. Renders the same view as the Father Eye desktop panel
+(via shared mapcore renderer) so opening the map in-game and the panel side-
+by-side shows identical pixels. Op-gated. Owned by a parallel Claude session
+— see map/docs/HANDOFF.md.
+'''
+
+[[dependencies.fathereye_map]]
+    modId="forge"
+    mandatory=true
+    versionRange="[36,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.fathereye_map]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.16.5,1.17)"
+    ordering="NONE"
+    side="BOTH"
+
+# Optional dependency on bridge: when present, the map can read live snapshot
+# data via the bridge's in-process API (no IPC). When absent, fall back to
+# vanilla world enumeration on the client.
+[[dependencies.fathereye_map]]
+    modId="fathereye_bridge"
+    mandatory=false
+    versionRange="[0.1.0,1.0.0)"
+    ordering="AFTER"
+    side="SERVER"

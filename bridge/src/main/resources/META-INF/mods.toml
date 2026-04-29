@@ -1,0 +1,32 @@
+modLoader="javafml"
+loaderVersion="[36,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="fathereye_bridge"
+version="${file.jarVersion}"
+displayName="Father Eye Bridge"
+authors="Father Eye"
+description='''
+Server-side ONLY bridge for the Father Eye desktop admin panel. Hosts a
+localhost Windows named-pipe API, samples JMX (memory/GC/thread CPU),
+attributes per-mod tick cost, tails the server log, and exposes admin RPCs
+(run command, teleport, kick/ban, weather/time, restart). The desktop panel
+connects and renders everything in a JavaFX window. Players never need this
+mod installed — the server runs it alone.
+'''
+displayTest="IGNORE_SERVER_VERSION"
+
+[[dependencies.fathereye_bridge]]
+    modId="forge"
+    mandatory=true
+    versionRange="[36,)"
+    ordering="NONE"
+    side="SERVER"
+
+[[dependencies.fathereye_bridge]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.16.5,1.17)"
+    ordering="NONE"
+    side="SERVER"

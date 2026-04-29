@@ -1,0 +1,80 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "io.fathereye",
+    "module": "mapcore",
+    "version": "0.2.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "7.6.4"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.2.0.jar",
+          "url": "mapcore-0.2.0.jar",
+          "size": 15448,
+          "sha512": "a1238f9555afd2f44c537549daa84b7bb1bb972a3b4e5e61a92da3e578d9bc4248373dcb4d73b87bf77bbb85fb0aaa9f39205ca1174b3fb50b94cab650ba964b",
+          "sha256": "4b70e8f142c8aabfa57354ac2d1d658435c676bbb485e3e4b12955b45c5eb405",
+          "sha1": "96b57139adee433348afeb46277a298e5485cf2c",
+          "md5": "2e3edf96cdd1b17692fe9a6087733e77"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.2.0.jar",
+          "url": "mapcore-0.2.0.jar",
+          "size": 15448,
+          "sha512": "a1238f9555afd2f44c537549daa84b7bb1bb972a3b4e5e61a92da3e578d9bc4248373dcb4d73b87bf77bbb85fb0aaa9f39205ca1174b3fb50b94cab650ba964b",
+          "sha256": "4b70e8f142c8aabfa57354ac2d1d658435c676bbb485e3e4b12955b45c5eb405",
+          "sha1": "96b57139adee433348afeb46277a298e5485cf2c",
+          "md5": "2e3edf96cdd1b17692fe9a6087733e77"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.2.0-sources.jar",
+          "url": "mapcore-0.2.0-sources.jar",
+          "size": 12040,
+          "sha512": "1644608d36e043922d77e4fdbbffe1c08c1134e8806e328434b7f5cf3fdbfea927344403c15ad635b588d4e89bc32fdd7eb33541e07f01ab9cf1c7877b0dfe7e",
+          "sha256": "f5f9cebc498b81a3d8dfac28a68b96024f1cb4e3d0ed9dc07b5de1154a50ba97",
+          "sha1": "c451e5a2c2f0fea50e70ebef3cc8273905bd826e",
+          "md5": "3cce5de6373a06034a205183bab3bad2"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,615 @@
+plugins {
+    id 'application'
+    id 'java'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+version = project.findProperty('panelVersion') ?: '0.1.0'
+archivesBaseName = 'fathereye-panel'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'localMaven'
+        url = uri("${rootProject.projectDir}/local-maven")
+    }
+}
+
+application {
+    // Launcher trick: a non-Application class calls Application.launch() from
+    // its main(). Required because JavaFX Application.main is locked to JPMS-
+    // modular launch on Java 9+ unless invoked from a non-Application entry.
+    mainClass = 'io.fathereye.panel.Launcher'
+}
+
+javafx {
+    version = project.javafxVersion
+    modules = ['javafx.base', 'javafx.graphics', 'javafx.controls', 'javafx.fxml']
+}
+
+dependencies {
+    implementation project(':mapcore')
+
+    implementation "net.java.dev.jna:jna-platform:${jnaVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:${jacksonVersion}"
+    implementation "org.jctools:jctools-core:${jctoolsVersion}"
+    implementation "org.xerial:sqlite-jdbc:${sqliteVersion}"
+    // JFreeChart-FX 2.0.1 transitively pulls org.openjfx:javafx-swing:15
+    // which lacks a mac-aarch64 classifier (only x86_64 on its era of
+    // Maven Central). Apple Silicon Mac builds fail with "Could not find
+    // javafx-swing-15-mac-aarch64.jar". Exclude the stale transitive and
+    // pin the modern JavaFX 21 swing artifact alongside the other FX
+    // modules already managed by the JavaFX gradle plugin.
+    implementation("org.jfree:org.jfree.chart.fx:${jfreechartFxVersion}") {
+        exclude group: 'org.openjfx', module: 'javafx-swing'
+    }
+    implementation "org.openjfx:javafx-swing:${project.javafxVersion}"
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// jpackage tasks. Build installDist (portable layout with all jars + scripts),
+// then invoke jpackage to produce a platform-native package under dist/.
+// Requires JDK 17+ on PATH (or via org.gradle.java.home).
+//
+//   :panel:jpackageExe       Windows .exe app-image (run on Windows)
+//   :panel:jpackageMacApp    macOS .app app-image (run on macOS)
+//
+// jpackage cannot cross-compile: produce a Mac app from a Windows host or
+// vice versa. Run the appropriate task on the matching OS. The JavaFX
+// gradle plugin auto-detects the host platform and pulls the matching
+// native classifier (`:win`, `:mac`, `:mac-aarch64`, `:linux`).
+tasks.register('jpackageExe') {
+    group = 'distribution'
+    description = 'Build a Windows app-image .exe via jpackage.'
+    dependsOn 'installDist'
+    doLast {
+        def libDir = layout.buildDirectory.dir('install/panel/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def appName = 'Server Start with Father Eye'
+        // jpackage refuses to overwrite an existing dir; delete it.
+        def existing = new File(outDir, appName)
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        if (System.getProperty('os.name').toLowerCase().contains('windows')) {
+            jpkg += '.exe'
+        }
+        def mainJar = libDir.listFiles().find { it.name.startsWith('fathereye-panel-') && it.name.endsWith('.jar') }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+        // jpackage drives jlink to build a custom JDK runtime. The default
+        // closure only includes modules reachable from java.base — our
+        // deps need more: logback (java.naming), sqlite-jdbc (java.sql),
+        // Jackson (java.xml), JNA (jdk.unsupported), JavaFX needs
+        // java.desktop + java.scripting, etc. Be generous: list every
+        // module the panel + its transitive deps could plausibly load.
+        def jdkModules = [
+                'java.base', 'java.desktop', 'java.logging', 'java.management',
+                'java.naming', 'java.net.http', 'java.prefs', 'java.scripting', 'java.sql',
+                'java.xml', 'java.xml.crypto', 'java.security.jgss',
+                'jdk.unsupported', 'jdk.crypto.ec', 'jdk.crypto.cryptoki',
+                'jdk.naming.dns', 'jdk.localedata'
+        ].join(',')
+        def fxModules = 'javafx.base,javafx.graphics,javafx.controls,javafx.fxml,javafx.swing'
+
+        exec {
+            commandLine jpkg,
+                    '--type', 'app-image',
+                    '--name', appName,
+                    '--app-version', project.version,
+                    '--input', libDir.absolutePath,
+                    '--main-jar', mainJar.name,
+                    '--main-class', 'io.fathereye.panel.Launcher',
+                    '--module-path', libDir.absolutePath,
+                    '--add-modules', "${jdkModules},${fxModules}",
+                    '--dest', outDir.absolutePath,
+                    '--win-console'
+        }
+        println "jpackage output -> ${outDir}"
+    }
+}
+
+// Bld-06 (2026-04-26): per user directive, the panel must live at the
+// SERVER FOLDER ROOT — not in a "Server Start with Father Eye/" subdirectory.
+// jpackage always creates a subfolder named after the app, so this task
+// flattens the output: copies the EXE, app/, and runtime/ from
+// dist/Server Start with Father Eye/ directly into the configured server
+// folder. The user double-clicks the EXE in the server folder root.
+//
+// Default target is the TomCraft-Server folder; override per-invocation
+// with -PdeployTarget=<absolute-path>.
+tasks.register('deployToServer') {
+    group = 'distribution'
+    description = 'Flatten jpackage output into the server folder root (EXE beside mods/, world/, etc.).'
+    dependsOn 'jpackageExe'
+    doLast {
+        def deployTarget = project.findProperty('deployTarget') ?: 'C:/Users/lukeo/Desktop/TomCraft-Server'
+        def appName = 'Server Start with Father Eye'
+        def srcRoot = rootProject.layout.projectDirectory.dir("dist/${appName}").asFile
+        def dstRoot = new File(deployTarget)
+        if (!srcRoot.isDirectory()) {
+            throw new GradleException("Source not found: ${srcRoot}. Did jpackageExe succeed?")
+        }
+        if (!dstRoot.isDirectory()) {
+            throw new GradleException("Deploy target not found: ${dstRoot}. Pass -PdeployTarget=...")
+        }
+        // Make any read-only files writable so cp can overwrite. jpackage
+        // marks the EXE read-only on Windows.
+        ant.chmod(perm: 'u+w', type: 'both') {
+            fileset(dir: dstRoot.absolutePath) {
+                include(name: 'Server Start with Father Eye.exe')
+                include(name: 'app/**/*')
+                include(name: 'runtime/**/*')
+            }
+        }
+        // Wipe the previous flat install (if any) — old app/ + runtime/
+        // contents may be stale.
+        ['Server Start with Father Eye.exe', 'app', 'runtime'].each { name ->
+            def f = new File(dstRoot, name)
+            if (f.exists()) {
+                if (f.isDirectory()) f.deleteDir() else f.delete()
+            }
+        }
+        copy {
+            from(srcRoot) {
+                include 'Server Start with Father Eye.exe'
+                include 'app/**'
+                include 'runtime/**'
+            }
+            into dstRoot
+        }
+        println "panel flattened into ${dstRoot}"
+    }
+}
+
+// Bld-07 (2026-04-26): self-contained distributable wrapper.
+// Per user directive: "the server start application and folders to be in
+// one self-contained wrapper so i can distribute it to others".
+//
+// Builds a single .zip under dist/ containing the entire Forge server
+// pre-installed by the user, MINUS world / logs / crash-reports / backups /
+// banlists / op lists / cached-profile data — i.e. everything the recipient
+// needs for a turnkey "extract and double-click" experience, with no
+// session-specific data.
+//
+// The recipient extracts the zip, accepts the MC EULA (eula.txt), and
+// double-clicks "Server Start with Father Eye.exe". The panel auto-starts
+// the server, the bridge attaches, and the panel is wired up.
+//
+// Override server source dir with -PserverSource=<absolute-path>; defaults
+// to the dev TomCraft-Server. Override output filename with
+// -PdistName=<name>. The task depends on deployToServer so the panel and
+// bridge are guaranteed to be the freshly-built versions.
+// Bld-08 (2026-04-26): true single-file Windows .exe via IExpress (the
+// Windows-bundled SFX builder). Per user directive: "i want the server
+// starter application to be a standalone app with no dependency folders"
+// and "find another solution than 7zip, has to be standalone" and "i dont
+// want things hidden, i want an actual standalone".
+//
+// Pipeline:
+//   1. jpackageExe produces dist/Server Start with Father Eye/<files>
+//   2. We zip that folder to fathereye-bundle-<ver>.zip
+//   3. We emit a small run.bat that:
+//      - Captures the launching folder via %CD% (the user's server folder
+//        when they double-click the .exe in their server folder).
+//      - On first run, expands fathereye-bundle.zip into
+//        %LOCALAPPDATA%\FatherEye\bundle-<ver>\.
+//      - Launches the bundled "Server Start with Father Eye.exe" with cwd
+//        set back to the user's server folder, so the panel auto-starts
+//        the server in the right place.
+//   4. iexpress.exe packages the zip + run.bat into a single .exe and
+//      configures AppLaunched=cmd /c run.bat.
+//
+// Output: dist/Server Start with Father Eye.exe — a single file the user
+// drops into their server folder. No app/ or runtime/ siblings.
+//
+// First run extracts ~80 MB to LOCALAPPDATA; subsequent runs are instant
+// because the bundle is cached per-version.
+tasks.register('singleFileExe') {
+    group = 'distribution'
+    description = 'Build a single-file standalone .exe — pure C# launcher with embedded bundle resources, no IExpress.'
+    dependsOn 'jpackageExe'
+    dependsOn ':bridge:shadowJar'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('windows')) {
+            throw new GradleException("singleFileExe requires Windows (csc.exe).")
+        }
+        def appName = 'Server Start with Father Eye'
+        def jpackageDir = rootProject.layout.projectDirectory.dir("dist/${appName}").asFile
+        if (!jpackageDir.isDirectory()) {
+            throw new GradleException("jpackage output not found: ${jpackageDir}")
+        }
+        def stagingDir = layout.buildDirectory.dir('exe-stage').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+
+        if (stagingDir.exists()) stagingDir.deleteDir()
+        stagingDir.mkdirs()
+
+        // ----- Resources to embed --------------------------------------
+        // 1. Zip jpackage output (panel + JLink runtime).
+        def bundleZip = new File(stagingDir, 'fathereye-bundle.zip')
+        ant.zip(destfile: bundleZip.absolutePath) {
+            fileset(dir: jpackageDir.absolutePath)
+        }
+        // 2. Bridge mod jar — auto-deployed to <serverDir>/mods on launch.
+        def bridgeJarSrc = new File(rootProject.projectDir,
+                "bridge/build/libs/fathereye-bridge-${project.version}.jar")
+        if (!bridgeJarSrc.isFile()) {
+            throw new GradleException(
+                    "bridge jar not found: ${bridgeJarSrc}. Run :bridge:shadowJar first.")
+        }
+        copy {
+            from bridgeJarSrc
+            into stagingDir
+        }
+
+        // ----- C# launcher source --------------------------------------
+        // We replaced the old IExpress + tiny-launcher pipeline (Bld-08)
+        // with a single self-contained C# EXE. IExpress repeatedly broke
+        // on paths containing spaces ("ModPack Server Test\..." showed a
+        // 'The network path was not found' dialog with title `\\` BEFORE
+        // our launcher could even start). The new design embeds the
+        // panel bundle and the bridge jar as PE resources, extracts on
+        // first run to %LOCALAPPDATA%\FatherEye\bundle-<ver>, and uses
+        // THIS EXE'S OWN LOCATION as the server folder — not cwd, not
+        // parent process. Bulletproof for any folder name including
+        // those with spaces / unicode.
+        def bridgeJarName = "fathereye-bridge-${project.version}.jar"
+        def launcherCs = new File(stagingDir, 'launcher.cs')
+        launcherCs.text = """\
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Reflection;
+
+class Launcher {
+    static int Main(string[] args) {
+        try {
+            // BULLETPROOF server-folder detection: use this EXE's actual
+            // disk location, not cwd or parent process. Whoever
+            // double-clicks the EXE wherever they put it, the panel
+            // manages the server in THAT folder.
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            string serverDir = Path.GetDirectoryName(exePath);
+            string ver = "${project.version}";
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string cache = Path.Combine(localAppData, "FatherEye", "bundle-" + ver);
+            string panelExe = Path.Combine(cache, "${appName}.exe");
+
+            // First-run extract from the embedded resource.
+            if (!File.Exists(panelExe)) {
+                if (Directory.Exists(cache)) {
+                    try { Directory.Delete(cache, true); } catch {}
+                }
+                Directory.CreateDirectory(cache);
+                string tmpZip = Path.Combine(Path.GetTempPath(),
+                        "fathereye-bundle-" + Guid.NewGuid().ToString("N") + ".zip");
+                using (Stream rs = typeof(Launcher).Assembly.GetManifestResourceStream("fathereye-bundle.zip")) {
+                    if (rs == null) throw new Exception("embedded resource fathereye-bundle.zip not found in launcher");
+                    using (FileStream fs = File.Create(tmpZip)) { rs.CopyTo(fs); }
+                }
+                try {
+                    ZipFile.ExtractToDirectory(tmpZip, cache);
+                } finally {
+                    try { File.Delete(tmpZip); } catch {}
+                }
+            }
+
+            // Bridge auto-deploy: ALWAYS overwrite the bridge jar in
+            // <serverDir>/mods with the embedded one on every launch.
+            // User: "launcher has to always check and push a fresh
+            // bridge jar on boot". The previous behaviour only wrote
+            // when no fathereye-bridge-*.jar existed, which made
+            // bridge changes invisible after the first launch (the
+            // user would update the EXE, click launch, and the OLD
+            // jar that was already in mods stayed there indefinitely).
+            // We also delete any older-version fathereye-bridge-*.jar
+            // siblings so version bumps don't load two copies.
+            string modsDir = Path.Combine(serverDir, "mods");
+            string bridgeName = "${bridgeJarName}";
+            if (Directory.Exists(modsDir)) {
+                foreach (string f in Directory.GetFiles(modsDir, "fathereye-bridge-*.jar")) {
+                    if (Path.GetFileName(f) != bridgeName) {
+                        try { File.Delete(f); } catch {}
+                    }
+                }
+                string bridgeDst = Path.Combine(modsDir, bridgeName);
+                using (Stream rs = typeof(Launcher).Assembly.GetManifestResourceStream(bridgeName)) {
+                    if (rs != null) {
+                        // Overwrite is fine: server isn't running yet
+                        // (panel boot precedes server boot via Save &
+                        // Start). If the jar is locked by a prior
+                        // crashed-but-not-cleaned-up server JVM, a
+                        // try/catch silently keeps the existing jar.
+                        try {
+                            using (FileStream fs = File.Create(bridgeDst)) { rs.CopyTo(fs); }
+                        } catch {}
+                    }
+                }
+            }
+
+            // Launch the panel JVM with cwd = server folder.
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = panelExe;
+            psi.WorkingDirectory = serverDir;
+            psi.UseShellExecute = false;
+            Process.Start(psi);
+            return 0;
+        } catch (Exception ex) {
+            try {
+                System.Windows.Forms.MessageBox.Show(
+                    ex.ToString(),
+                    "${appName} - launch failed",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Error);
+            } catch {}
+            return 1;
+        }
+    }
+}
+"""
+
+        def csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
+        def existing = new File(outDir, "${appName}.exe")
+        if (existing.exists()) existing.delete()
+        outDir.mkdirs()
+        // csc.exe with /resource:<file>,<resourceName>. The C# code
+        // looks up by resourceName via Assembly.GetManifestResourceStream.
+        ant.exec(executable: csc, dir: stagingDir.absolutePath, failonerror: 'true') {
+            arg(value: '/nologo')
+            arg(value: '/target:winexe')
+            arg(value: '/optimize')
+            arg(value: '/reference:System.dll')
+            arg(value: '/reference:System.IO.Compression.dll')
+            arg(value: '/reference:System.IO.Compression.FileSystem.dll')
+            arg(value: '/reference:System.Windows.Forms.dll')
+            arg(value: '/resource:fathereye-bundle.zip,fathereye-bundle.zip')
+            arg(value: "/resource:${bridgeJarName},${bridgeJarName}")
+            arg(value: '/out:' + existing.absolutePath.replace('/', '\\'))
+            arg(value: 'launcher.cs')
+        }
+        if (!existing.exists()) {
+            throw new GradleException("csc.exe did not produce ${existing}");
+        }
+        println "single-file standalone exe -> ${existing.absolutePath} (${existing.length() / 1024 / 1024} MiB)"
+    }
+}
+
+// Bld-08 (Mac counterpart): produce a .dmg disk image on macOS hosts.
+// jpackage cannot cross-compile, so this MUST run on a Mac. The output is
+// a single .dmg the recipient mounts, drags the .app into Applications,
+// and double-clicks. The .app itself is a single icon in Finder so it's
+// already "standalone" by Mac conventions.
+tasks.register('jpackageMacDmg') {
+    group = 'distribution'
+    description = 'Build a macOS .dmg. Run on macOS.'
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('mac')) {
+            throw new GradleException(
+                    "jpackageMacDmg must run on macOS (current host: ${os}). " +
+                    "jpackage cannot cross-compile; build on a Mac.")
+        }
+        def libDir = layout.buildDirectory.dir('install/panel/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def appName = 'Server Start with Father Eye'
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-panel-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def jdkModules = [
+                'java.base', 'java.desktop', 'java.logging', 'java.management',
+                'java.naming', 'java.net.http', 'java.prefs', 'java.scripting', 'java.sql',
+                'java.xml', 'java.xml.crypto', 'java.security.jgss',
+                'jdk.unsupported', 'jdk.crypto.ec', 'jdk.crypto.cryptoki',
+                'jdk.naming.dns', 'jdk.localedata'
+        ].join(',')
+        def fxModules = 'javafx.base,javafx.graphics,javafx.controls,javafx.fxml,javafx.swing'
+
+        // jpackage on macOS rejects an app-version starting with 0
+        // ("The first number in an app-version cannot be zero or
+        // negative."). Our project version is 0.1.0; map it to 1.0.0 for
+        // the bundle metadata. No effect on Windows / Linux bundlers.
+        def macAppVersion = project.version.toString().startsWith('0.')
+                ? '1.' + project.version.toString().substring(2)
+                : project.version.toString()
+        exec {
+            commandLine jpkg,
+                    '--type', 'dmg',
+                    '--name', appName,
+                    '--app-version', macAppVersion,
+                    '--input', libDir.absolutePath,
+                    '--main-jar', mainJar.name,
+                    '--main-class', 'io.fathereye.panel.Launcher',
+                    '--module-path', libDir.absolutePath,
+                    '--add-modules', "${jdkModules},${fxModules}",
+                    '--dest', outDir.absolutePath
+        }
+        println "macOS dmg -> ${outDir}/${appName}-${macAppVersion}.dmg"
+    }
+}
+
+tasks.register('distributablePrep') {
+    group = 'distribution'
+    description = 'Stage a clean copy of the server tree under build/dist-stage for zipping.'
+    dependsOn 'deployToServer'
+    doLast {
+        def serverSource = project.findProperty('serverSource') ?: 'C:/Users/lukeo/Desktop/TomCraft-Server'
+        def distName = project.findProperty('distName') ?: "FatherEye-Server-${project.version}"
+        def stageDir = layout.buildDirectory.dir('dist-stage').get().asFile
+        def topDir = new File(stageDir, distName)
+        if (stageDir.exists()) stageDir.deleteDir()
+        stageDir.mkdirs()
+        copy {
+            from(serverSource)
+            into topDir
+            // Skip session-specific / per-user data; the recipient generates
+            // their own world on first run.
+            exclude 'world/**'
+            exclude 'world_*/**'
+            exclude 'logs/**'
+            exclude 'crash-reports/**'
+            exclude 'backups/**'
+            // Sensitive admin lists and player caches.
+            exclude 'banned-ips.json'
+            exclude 'banned-players.json'
+            exclude 'ops.json'
+            exclude 'whitelist.json'
+            exclude 'usercache.json'
+            exclude 'usernamecache.json'
+            // Forge installer log + session lock.
+            exclude '*.installer.jar.log'
+            exclude '**/session.lock'
+            // Father Eye runtime state lives under %LOCALAPPDATA% on the
+            // recipient's machine.
+            exclude 'fathereye-instance.uuid'
+        }
+
+        // Pre-accept the Mojang EULA per user directive ("make it true").
+        // The recipient gets a zero-friction first-run experience. The EULA
+        // URL is recorded above the flag so the recipient can read it.
+        new File(topDir, 'eula.txt').text =
+                "# Indicates agreement to the Mojang Minecraft EULA\n" +
+                "# (https://aka.ms/MinecraftEULA).\n" +
+                "eula=true\n"
+
+        // README explaining how to launch.
+        new File(topDir, 'README.txt').text = """\
+Father Eye Server ${project.version}
+=========================================
+
+Self-contained Minecraft Forge 1.16.5 server with the Father Eye admin
+panel bundled together. Double-click "Server Start with Father Eye.exe"
+to launch -- the panel auto-starts the Minecraft server in the background.
+
+First-time setup
+----------------
+1. (Optional) Edit server.properties -- port (default 25566), motd,
+   gamemode, difficulty.
+2. Double-click "Server Start with Father Eye.exe".
+
+The Mojang EULA (https://aka.ms/MinecraftEULA) is pre-accepted in
+eula.txt; running this distribution implies you also agree to it.
+
+What you get
+------------
+- Live TPS / MSPT / heap charts.
+- World map: zoom out, see chunks load, right-click any player marker for
+  admin actions (kick, ban, op, teleport, send message).
+- Online player list with positions, ping, gamemode, health, food.
+- Per-mod tick-impact breakdown (which mod uses the most server
+  CPU).
+- Real-time alerts on TPS drops, heap exhaustion, mod spikes.
+- Pre-stop world backup with rotating retention.
+- Daily auto-restart at 04:00 local.
+- Same bridge can be reattached after restart — panel reconnects
+  automatically.
+
+Closing the panel cleanly stops the server. To play on this server,
+connect any 1.16.5 Forge 36.2.39 client to localhost:25566 (or change
+the port in server.properties).
+
+Configuration
+-------------
+- Panel config:   %LOCALAPPDATA%\\FatherEye\\config.json
+- Panel logs:     %LOCALAPPDATA%\\FatherEye\\panel.log
+- Bridge config:  server-side mods folder + server.properties
+- World data:     world/ (created on first server start)
+- Backups:        backups/ (timestamped pre-stop snapshots)
+
+Adding mods
+-----------
+Drop additional Forge 1.16.5-36.2.39 mods into the mods/ folder. DO NOT
+remove fathereye-bridge-${project.version}.jar — that is required for the
+panel to talk to the server.
+
+Source / issues / updates
+-------------------------
+https://github.com/hypnofrenzy76/father-eye
+"""
+        println "staged distributable tree -> ${topDir}"
+    }
+}
+
+tasks.register('distributableZip', Zip) {
+    group = 'distribution'
+    description = 'Bundle a self-contained server-+-panel zip for distribution.'
+    dependsOn 'distributablePrep'
+
+    def distName = project.findProperty('distName') ?: "FatherEye-Server-${project.version}"
+    archiveFileName = "${distName}.zip"
+    destinationDirectory = rootProject.layout.projectDirectory.dir('dist').asFile
+    from layout.buildDirectory.dir('dist-stage')
+
+    doLast {
+        println "self-contained distributable -> ${destinationDirectory.get().asFile}/${archiveFileName.get()}"
+    }
+}
+
+tasks.register('jpackageMacApp') {
+    group = 'distribution'
+    description = 'Build a macOS .app via jpackage. Run on macOS.'
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('mac')) {
+            throw new GradleException(
+                    "jpackageMacApp must run on macOS (current host: ${os}). " +
+                    "jpackage cannot cross-compile between OSes.")
+        }
+        def libDir = layout.buildDirectory.dir('install/panel/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def appName = 'Server Start with Father Eye'
+        def existing = new File(outDir, "${appName}.app")
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-panel-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def jdkModules = [
+                'java.base', 'java.desktop', 'java.logging', 'java.management',
+                'java.naming', 'java.net.http', 'java.prefs', 'java.scripting', 'java.sql',
+                'java.xml', 'java.xml.crypto', 'java.security.jgss',
+                'jdk.unsupported', 'jdk.crypto.ec', 'jdk.crypto.cryptoki',
+                'jdk.naming.dns', 'jdk.localedata'
+        ].join(',')
+        def fxModules = 'javafx.base,javafx.graphics,javafx.controls,javafx.fxml,javafx.swing'
+
+        exec {
+            commandLine jpkg,
+                    '--type', 'app-image',
+                    '--name', appName,
+                    '--app-version', project.version,
+                    '--input', libDir.absolutePath,
+                    '--main-jar', mainJar.name,
+                    '--main-class', 'io.fathereye.panel.Launcher',
+                    '--module-path', libDir.absolutePath,
+                    '--add-modules', "${jdkModules},${fxModules}",
+                    '--dest', outDir.absolutePath
+        }
+        println "jpackage output -> ${outDir}/${appName}.app"
+    }
+}

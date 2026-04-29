@@ -1,0 +1,50 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+bin/
+out/
+
+# Forge run directory (bridge/map subprojects)
+*/run/
+
+# jpackage / jlink output
+panel/jpackage-app/
+panel/image/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Misc
+*.log
+nul
+.claude/settings.local.json
+
+# Keep local-maven contents committed (mapcore handoff to other Claude session)
+!local-maven/**
+
+# jpackage produces an app-image folder under dist/<name>/ containing a
+# bundled JRE (~80MB). Don't commit that — it belongs in releases, not in
+# source. The dist/ root itself stays tracked as a placeholder.
+dist/*/
+# distributableZip output (~189 MB) — exceeds GitHub's 100 MB file limit.
+# Build artifact, not source; ship via releases or external file hosting.
+dist/*.zip
+# IExpress single-file standalone exe (~73 MB) — over GitHub's 50 MB
+# recommended limit. Build artifact; CI workflow uploads as a release asset.
+dist/*.exe
+dist/*.dmg
+!dist/.gitkeep
