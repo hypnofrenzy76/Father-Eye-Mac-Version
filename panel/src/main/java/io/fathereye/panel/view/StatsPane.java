@@ -92,12 +92,15 @@ public final class StatsPane {
         JFreeChart c4 = ChartFactory.createTimeSeriesChart("GC pause (ms / sec)", "Time", "ms", gcDs, false, false, false);
         JFreeChart c5 = ChartFactory.createTimeSeriesChart("Live threads", "Time", "count", threadsDs, false, false, false);
         JFreeChart c6 = ChartFactory.createTimeSeriesChart("Process CPU", "Time", "%", cpuDs, false, false, false);
-        tpsSeries.setMaximumItemCount(900);
-        msptSeries.setMaximumItemCount(900);
-        heapSeries.setMaximumItemCount(900);
-        gcMsSeries.setMaximumItemCount(900);
-        threadsSeries.setMaximumItemCount(900);
-        cpuSeries.setMaximumItemCount(900);
+        // Mac fork (audit 5): trimmed 900 -> 300 to match the documented
+        // 5-min @ 1 Hz rolling window (300 points). 900 was an upstream
+        // overshoot that wasted heap on a 4-thread Sandy Bridge.
+        tpsSeries.setMaximumItemCount(300);
+        msptSeries.setMaximumItemCount(300);
+        heapSeries.setMaximumItemCount(300);
+        gcMsSeries.setMaximumItemCount(300);
+        threadsSeries.setMaximumItemCount(300);
+        cpuSeries.setMaximumItemCount(300);
 
         tpsChart     = new ChartViewer(c1);
         msptChart    = new ChartViewer(c2);

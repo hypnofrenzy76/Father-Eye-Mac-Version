@@ -45,8 +45,24 @@ public final class PipeClient {
         if (addr == null || addr.isEmpty()) {
             throw new IllegalArgumentException("marker has no address/pipeName");
         }
-        // Default to named-pipe when kind is absent (legacy markers).
+        // Mac fork (audit 9 BUG 1): refuse named-pipe transport entirely
+        // on non-Windows. The upstream code instantiated WindowsPipeTransport
+        // which loads JNA Win32 native libs at static-init; on macOS this
+        // throws UnsatisfiedLinkError that escapes IOException catch
+        // blocks and crashes the panel. Even with the bridge always
+        // setting transport="tcp" today (Brg-12), a stale Windows marker
+        // copied across machines or a legacy marker without a transport
+        // field would still hit this path. Refuse with a clear message
+        // instead.
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().startsWith("windows");
         if (kind == null || kind.equalsIgnoreCase("named-pipe")) {
+            if (!isWindows) {
+                throw new IllegalStateException(
+                        "named-pipe transport is not supported on " +
+                        System.getProperty("os.name") + "; the bridge must " +
+                        "advertise transport=\"tcp\" in its marker file. " +
+                        "Stale Windows marker?");
+            }
             return new WindowsPipeTransport(addr);
         }
         if (kind.equalsIgnoreCase("tcp")) {

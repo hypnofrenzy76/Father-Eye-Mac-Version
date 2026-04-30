@@ -1,0 +1,156 @@
+plugins {
+    id 'application'
+    id 'java'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+version = project.findProperty('panelVersion') ?: '0.3.0-mac.1'
+archivesBaseName = 'fathereye-setup'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'io.fathereye.setup.SetupLauncher'
+}
+
+javafx {
+    version = project.javafxVersion
+    modules = ['javafx.base', 'javafx.graphics', 'javafx.controls']
+}
+
+dependencies {
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+}
+
+// Copy the freshly-built bridge JAR into setup/src/main/resources so it
+// gets packaged inside the Setup app's classpath. SetupApp loads it via
+// SetupApp.class.getResourceAsStream("/fathereye-bridge-bundle.jar")
+// when installing the bridge mod into <serverDir>/mods/.
+//
+// Depends on :bridge:shadowJar so the user only needs to run
+// :setup:jpackageMacApp; the bridge build is implicit.
+tasks.register('embedBridgeJar', Copy) {
+    dependsOn ':bridge:shadowJar'
+    def bridgeVer = project.findProperty('bridgeVersion') ?: '0.2.9'
+    from "${rootProject.projectDir}/bridge/build/libs/fathereye-bridge-${bridgeVer}.jar"
+    into "${projectDir}/src/main/resources"
+    rename { 'fathereye-bridge-bundle.jar' }
+    doLast {
+        println "Embedded bridge -> ${projectDir}/src/main/resources/fathereye-bridge-bundle.jar"
+    }
+}
+
+processResources.dependsOn embedBridgeJar
+
+// =========================================================================
+// Father Eye Setup.app — first-run installer that prepares the user's Mac
+// to run the panel + Forge server. Distinct from the panel app per user
+// directive: setup wizard must be a separate application from the server
+// panel.
+//
+// Responsibilities:
+//   1. Detect / install JDK 8 (for the Forge server runtime).
+//   2. Detect / install JDK 17 (for the panel runtime — only if the user
+//      did not download a pre-bundled .app, otherwise no-op).
+//   3. Prompt for server install directory (default ~/Minecraft Server).
+//   4. Download Forge 1.16.5-36.2.39 installer.
+//   5. Run forge-installer.jar --installServer.
+//   6. Generate eula.txt, server.properties, and run.sh from the user's
+//      choices in the wizard.
+//   7. Copy the bundled fathereye-bridge.jar into <serverDir>/mods/.
+//   8. Write ~/Library/Application Support/FatherEye/config.json with the
+//      resolved paths so the panel auto-attaches on launch.
+//   9. Open the Father Eye.app on Finish so the user goes straight to
+//      the panel.
+//
+// Build: ./gradlew :setup:jpackageMacApp on macOS produces
+// dist/Father Eye Setup.app.
+// =========================================================================
+
+def feSetupJdkModules = [
+        'java.base', 'java.desktop', 'java.logging', 'java.management',
+        'java.net.http', 'java.naming', 'java.scripting', 'java.security.jgss',
+        'java.xml',
+        'jdk.crypto.ec', 'jdk.crypto.cryptoki', 'jdk.naming.dns',
+        'jdk.unsupported', 'jdk.localedata'
+].join(',')
+def feSetupFxModules = 'javafx.base,javafx.graphics,javafx.controls'
+
+def feSetupJavaOptions = [
+        '-Dprism.order=es2,sw',
+        '-Dprism.lcdtext=false',
+        '-Dprism.allowhidpi=false',
+        '-Dprism.verbose=true',
+        '-Djdk.tls.client.protocols=TLSv1.2,TLSv1.3'
+]
+
+def feSetupBundleId = 'com.fathereye.setup.mac'
+def feSetupMacMinOS = '10.13.0'
+
+tasks.register('jpackageMacApp') {
+    group = 'distribution'
+    description = 'Build the Father Eye Setup.app first-run wizard for macOS High Sierra+. Run on macOS only.'
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('mac')) {
+            throw new GradleException("setup:jpackageMacApp must run on macOS (current host: ${os}).")
+        }
+        def libDir = layout.buildDirectory.dir('install/setup/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def appName = 'Father Eye Setup'
+        def existing = new File(outDir, "${appName}.app")
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-setup-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def macAppVersion = project.version.toString().startsWith('0.')
+                ? '1.' + project.version.toString().substring(2).split('-')[0]
+                : project.version.toString()
+
+        def cmd = [
+                jpkg,
+                '--type', 'app-image',
+                '--name', appName,
+                '--app-version', macAppVersion,
+                '--input', libDir.absolutePath,
+                '--main-jar', mainJar.name,
+                '--main-class', 'io.fathereye.setup.SetupLauncher',
+                '--module-path', libDir.absolutePath,
+                '--add-modules', "${feSetupJdkModules},${feSetupFxModules}",
+                '--dest', outDir.absolutePath,
+                '--mac-package-identifier', feSetupBundleId,
+                '--mac-package-name', appName,
+                '--vendor', 'Father Eye'
+        ]
+        feSetupJavaOptions.each { cmd << '--java-options' << it }
+        exec { commandLine cmd }
+
+        // Audit 4 B6: insert-then-replace fallback for missing key.
+        def plist = new File(existing, 'Contents/Info.plist')
+        if (plist.exists()) {
+            def insertResult = exec {
+                commandLine 'plutil', '-insert', 'LSMinimumSystemVersion', '-string', feSetupMacMinOS, plist.absolutePath
+                ignoreExitValue = true
+            }
+            if (insertResult.exitValue != 0) {
+                exec { commandLine 'plutil', '-replace', 'LSMinimumSystemVersion', '-string', feSetupMacMinOS, plist.absolutePath }
+            }
+        }
+        println "Setup wizard -> ${outDir}/${appName}.app"
+    }
+}

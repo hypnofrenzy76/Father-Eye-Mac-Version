@@ -7,11 +7,19 @@
     </appender>
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <!-- Logback substitutes ${LOCALAPPDATA} from env vars and system
-             properties. The :- default applies if LOCALAPPDATA is unset. -->
-        <file>${LOCALAPPDATA:-${user.home}}/FatherEye/panel.log</file>
+        <!-- Mac fork: Logback substitutes ${FATHEREYE_APPDATA} from
+             system properties. App.java's static initialiser sets it
+             to PlatformPaths.appDataDir() before the LoggerFactory
+             binds Logback, so the path resolves to:
+               macOS:   ~/Library/Application Support/FatherEye
+               Windows: %LOCALAPPDATA%\FatherEye
+               Linux:   $XDG_DATA_HOME/FatherEye
+                        (or ~/.local/share/FatherEye if XDG unset)
+             The ${user.home}/FatherEye fallback covers the edge case
+             where the static init failed to set FATHEREYE_APPDATA. -->
+        <file>${FATHEREYE_APPDATA:-${user.home}/FatherEye}/panel.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
-            <fileNamePattern>${LOCALAPPDATA:-${user.home}}/FatherEye/panel.%i.log.gz</fileNamePattern>
+            <fileNamePattern>${FATHEREYE_APPDATA:-${user.home}/FatherEye}/panel.%i.log.gz</fileNamePattern>
             <minIndex>1</minIndex>
             <maxIndex>5</maxIndex>
         </rollingPolicy>

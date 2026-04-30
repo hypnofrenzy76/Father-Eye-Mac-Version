@@ -47,7 +47,23 @@ public final class MarkerFile {
         m.serverDir = serverDir;
         m.pid = currentPid();
         m.startedAtEpochMs = System.currentTimeMillis();
-        Files.write(path, JSON.writeValueAsBytes(m));
+        // Mac fork (audit 9 BUG 3): atomic write so the panel's
+        // MarkerDiscovery never reads a partially-written marker.
+        // Write to <uuid>.json.tmp then ATOMIC_MOVE to the final
+        // path. APFS, HFS+, and NTFS all support atomic rename;
+        // ext4 too. On any FS that doesn't (FAT32 etc.) the
+        // ATOMIC_MOVE option throws AtomicMoveNotSupportedException
+        // and we retry with a non-atomic move — better than the
+        // upstream's torn-write window.
+        Path tmp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+        Files.write(tmp, JSON.writeValueAsBytes(m));
+        try {
+            Files.move(tmp, path,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ame) {
+            Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     public void delete() {
@@ -59,12 +75,16 @@ public final class MarkerFile {
     }
 
     public static Path markerPath(UUID instanceUuid) {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData == null || localAppData.isEmpty()) {
-            // Sane fallback for dev (non-Windows or odd env): use user.home
-            localAppData = System.getProperty("user.home", ".");
-        }
-        return Paths.get(localAppData, "FatherEye", "bridges", instanceUuid + ".json");
+        // Mac fork: route through PlatformPaths so the bridge writes
+        // its marker to the same per-OS directory the panel scans:
+        //   macOS   -> ~/Library/Application Support/FatherEye/bridges/
+        //   Windows -> %LOCALAPPDATA%/FatherEye/bridges/
+        //   Linux   -> $XDG_DATA_HOME/FatherEye/bridges/
+        // Both sides MUST agree on this path or the panel never finds
+        // the marker and the connection hangs at "Awaiting bridge..."
+        return io.fathereye.bridge.util.PlatformPaths.appDataDir()
+                .resolve("bridges")
+                .resolve(instanceUuid + ".json");
     }
 
     private static long currentPid() {

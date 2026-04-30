@@ -72,6 +72,17 @@ public final class BackupService {
     }
 
     public Path runBackup() throws IOException {
+        // Mac fork (audit 7 P1, audit 10 B1): refuse to run when
+        // backupRoot is empty. Paths.get("") resolves to cwd, which
+        // on a Finder-launched .app is "/" — runBackup would then
+        // try to write world-<ts> to root and fail with
+        // AccessDeniedException. The Setup wizard fills in a real
+        // path; fresh installs without setup get an early-return
+        // with a clear log line.
+        if (backupRoot == null || backupRoot.toString().isEmpty()) {
+            LOG.warn("backup skipped: backupDir is not configured");
+            return null;
+        }
         Files.createDirectories(backupRoot);
         // Pnl-54 (audit fix): DateTimeFormatter is immutable / thread-
         // safe so concurrent hourly + pre-stop runs cannot corrupt
@@ -116,6 +127,8 @@ public final class BackupService {
      * concurrent panel session is currently writing.
      */
     public void sweepStalePartials() {
+        // Mac fork (audit 10 B1): same empty-path guard as runBackup.
+        if (backupRoot == null || backupRoot.toString().isEmpty()) return;
         if (!Files.isDirectory(backupRoot)) return;
         long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
         try (Stream<Path> kids = Files.list(backupRoot)) {

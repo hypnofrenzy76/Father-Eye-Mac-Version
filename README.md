@@ -14,10 +14,20 @@ This repo is a Mac-focused fork of [hypnofrenzy76/father-eye](https://github.com
 ## Prerequisites
 
 - **macOS 10.13.6 (High Sierra)** or later. Tested target: 21.5" iMac Mid 2011 with 32 GB RAM and AMD HD 6750M, running High Sierra.
-- **JDK 17** for the Gradle daemon and the panel runtime. Recommended:
-  - Eclipse Temurin 17 from <https://adoptium.net/> (works on 10.12+).
-  - Azul Zulu 17 from <https://www.azul.com/downloads/?version=java-17-lts&os=macos>.
-- For active development on the Forge subprojects (bridge, map): **JDK 8** is auto-provisioned by ForgeGradle 5.1 when running their tasks.
+- **JDK 17** for the Gradle daemon and the panel runtime. Pinned to **JavaFX 17.0.12** (JavaFX 21 hard-blocks any macOS earlier than 11 / Big Sur). Recommended:
+  - Azul Zulu 17 (Intel x64) from <https://www.azul.com/downloads/?version=java-17-lts&os=macos>. Often runs on 10.13.6 even though the docs list 10.14 as minimum.
+  - Eclipse Temurin 17 from <https://adoptium.net/> (officially 10.12+ minimum).
+- **JDK 8** for the Forge server runtime (Forge 1.16.5 requirement). Eclipse Temurin 8 from <https://adoptium.net/temurin/releases/?version=8&os=mac&arch=x64&package=jdk>. The Setup wizard guides you through this install.
+- **Gradle daemon must run on JDK 17.** Either set `JAVA_HOME` to your JDK 17 install before running `./gradlew`, or uncomment one of the `org.gradle.java.home` lines in `gradle.properties` to pin it. The JavaFX gradle plugin requires JDK 11+ to load.
+
+## Hardware-specific tuning baked into this fork
+
+- **JavaFX 17** (NOT 21). Pinned to 17.0.12 with full Intel x64 mac classifier set on Maven Central.
+- **`prism.order=es2,sw`** — forces JavaFX to use the OpenGL pipeline first (the AMD HD 6750M is non-Metal). Software fallback if the OpenGL handshake fails.
+- **`prism.maxvram=256m` + `prism.targetvram=192m` + `prism.disableRegionCaching=true`** — caps JavaFX's GPU-side resource pool so it triggers texture eviction before hitting the HD 6750M's 512 MB VRAM ceiling.
+- **`TILE_CACHE_LIMIT = 1024`** — tightened from upstream's 4096 for the same reason.
+- **Coalesced redraw via AnimationTimer** — replaces upstream's per-tile `Platform.runLater(redraw)` flood that saturated FX-thread on Sandy Bridge.
+- **`LSMinimumSystemVersion = 10.13.0`** patched into Info.plist via `plutil -insert` (with `-replace` fallback) so Finder accepts the .app on High Sierra.
 
 ## Build
 
@@ -38,7 +48,9 @@ To also build the Forge mods (only useful if you're iterating on bridge / map yo
 ./gradlew :map:build              # placeholder until the in-game map ships
 ```
 
-The Windows-only tasks from upstream (`:panel:jpackageExe`, `:panel:singleFileExe`, `:panel:deployToServer`) are still in `panel/build.gradle` for reference but are not exercised on Mac and may be removed in a future commit.
+The Windows-only tasks from upstream (`:panel:jpackageExe`, `:panel:singleFileExe`, `:panel:deployToServer`, `:panel:distributablePrep`, `:panel:distributableZip`) have been removed from `panel/build.gradle`. The Mac targets are the only supported build outputs in this fork.
+
+A separate `:setup:jpackageMacApp` task builds the **Father Eye Setup.app** first-run wizard, which downloads Forge 1.16.5-36.2.39, drops the Father Eye bridge mod into `<serverDir>/mods/`, pre-accepts the EULA, and writes a panel config that points at the new server install.
 
 ## gradle.properties
 

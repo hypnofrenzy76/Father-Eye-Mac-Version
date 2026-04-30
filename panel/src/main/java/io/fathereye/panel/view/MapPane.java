@@ -69,8 +69,19 @@ public final class MapPane {
 
     private static final Logger LOG = LoggerFactory.getLogger("FatherEye-MapPane");
 
-    /** 16×16 pixel pre-rendered tile cap (matches the old per-tile cache). */
-    private static final int TILE_CACHE_LIMIT = 4096;
+    /** 16×16 pixel pre-rendered tile cap. Mac fork (audit 5): tightened
+     *  from upstream's 4096 to 1024 to fit comfortably under the AMD HD
+     *  6750M's 512 MB shared VRAM with macOS WindowServer + browser
+     *  headroom. 1024 tiles still cover ~8x the visible-viewport chunk
+     *  count at zoom 4, so panning never visibly thrashes. */
+    private static final int TILE_CACHE_LIMIT = 1024;
+    /** Mac fork (audit 8): "needs redraw" flag set by tile-arrival /
+     *  pan / zoom paths and consumed by an AnimationTimer at FX-pulse
+     *  cadence. Replaces the per-tile Platform.runLater(redraw) flood
+     *  that saturated the Sandy Bridge i5's FX thread under heavy
+     *  chunk_tile floods. */
+    private final java.util.concurrent.atomic.AtomicBoolean dirty =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private static final int MAX_TILE_REQUESTS_PER_FRAME = 16;
     /** Debounce window (ms) — wait this long after the last drag/zoom event
      *  before issuing chunk_tile RPCs, so panning doesn't storm the bridge. */
@@ -264,8 +275,21 @@ public final class MapPane {
     public MapPane() {
         canvas.widthProperty().bind(root.widthProperty());
         canvas.heightProperty().bind(root.heightProperty().subtract(40));
-        canvas.widthProperty().addListener((o, a, b) -> redraw());
-        canvas.heightProperty().addListener((o, a, b) -> redraw());
+        canvas.widthProperty().addListener((o, a, b) -> dirty.set(true));
+        canvas.heightProperty().addListener((o, a, b) -> dirty.set(true));
+
+        // Mac fork (audit 8): coalesced-redraw AnimationTimer. Runs on
+        // the FX thread once per pulse (~60 Hz on hardware able to
+        // sustain it, lower under load). Calls redraw() only if a
+        // tile arrival / pan / zoom set the dirty flag. Eliminates
+        // the per-tile Platform.runLater(redraw) flood that saturated
+        // the FX queue on a 2.5 GHz Sandy Bridge during the 1280-
+        // chunks/sec initial fill.
+        new javafx.animation.AnimationTimer() {
+            @Override public void handle(long nowNanos) {
+                if (dirty.compareAndSet(true, false)) redraw();
+            }
+        }.start();
 
         // Pnl-68 (2026-04-27): every 5 s, scan `requested` for
         // entries older than REQUEST_TIMEOUT_MS and force-fail
@@ -998,6 +1022,14 @@ public final class MapPane {
         // state) run inside Platform.runLater.
         requested.remove(key);
         rejectedChunks.remove(key);
+        // Mac fork (audit 8 perf): coalesce per-tile redraws via the
+        // dirty flag. The upstream code did Platform.runLater(redraw)
+        // PER TILE, which on a Sandy Bridge i5 with 1280 tiles arriving
+        // per second saturated the FX queue with redraw runnables that
+        // each iterate every tile. Now we just mark dirty; the
+        // AnimationTimer in scheduleCoalescedRedraw() picks it up at
+        // most once per frame (~60 Hz) on the FX thread.
+        dirty.set(true);
         Platform.runLater(() -> {
             updateLoadingProgress();
             // Bounded LRU eviction.
@@ -1010,7 +1042,6 @@ public final class MapPane {
                     tileData.remove(k);
                 }
             }
-            redraw();
         });
     }
 

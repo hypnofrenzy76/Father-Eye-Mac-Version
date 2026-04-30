@@ -23,6 +23,32 @@ import java.util.concurrent.TimeUnit;
 
 public final class App extends Application {
 
+    // Mac Pnl-Mac-1: set the per-platform Father Eye AppData root as a
+    // system property BEFORE the SLF4J -> Logback binding happens. The
+    // panel's logback.xml resolves ${FATHEREYE_APPDATA} via this
+    // property, falling back to ${user.home}/FatherEye for safety. The
+    // static block must precede the LOG field because Java initialises
+    // static members in source order; if the field came first, LoggerFactory
+    // would bind Logback (and parse logback.xml) before the property
+    // existed, and the panel.log file would land in the upstream Windows
+    // location rather than ~/Library/Application Support/FatherEye on Mac.
+    static {
+        try {
+            java.nio.file.Path appData =
+                    io.fathereye.panel.util.PlatformPaths.appDataDir();
+            // Use forward slashes regardless of platform — logback's path
+            // resolver handles them on Windows fine. Avoids an escape-char
+            // tangle in the XML config.
+            System.setProperty("FATHEREYE_APPDATA",
+                    appData.toString().replace('\\', '/'));
+        } catch (Throwable ignored) {
+            // Logback's default fallback (${user.home}/FatherEye) will
+            // catch this. The bootstrap shouldn't be able to throw, but
+            // we don't want any exception during class loading to brick
+            // the panel before the user sees anything.
+        }
+    }
+
     private static final Logger LOG = LoggerFactory.getLogger("FatherEye-Panel");
     private static final String VERSION = "0.3.0-mac.1";
 
@@ -75,10 +101,15 @@ public final class App extends Application {
         } catch (Throwable t) {
             LOG.error("Father Eye panel failed during start()", t);
             try {
+                // Mac fork (audit 2): show the platform-correct log
+                // path so users on macOS aren't pointed at a Windows
+                // env var.
+                String logPath = io.fathereye.panel.util.PlatformPaths
+                        .appDataDir().resolve("panel.log").toString();
                 javafx.scene.control.Alert a = new javafx.scene.control.Alert(
                         javafx.scene.control.Alert.AlertType.ERROR,
                         "Startup failed: " + t.getClass().getSimpleName() + ": " + t.getMessage()
-                                + "\n\nSee %LOCALAPPDATA%/FatherEye/panel.log for the full stack trace.");
+                                + "\n\nSee " + logPath + " for the full stack trace.");
                 a.setHeaderText("Father Eye startup failed");
                 a.showAndWait();
             } catch (Throwable inner) {
@@ -493,6 +524,13 @@ public final class App extends Application {
                     if (launcher == null
                             || launcher.state() != ServerLauncher.State.RUNNING) {
                         // Skip silently; we backup live worlds only.
+                        return;
+                    }
+                    // Mac fork (audit 10 B1): early-return when
+                    // backupDir is empty so the hourly executor doesn't
+                    // throw / spam status updates every hour.
+                    if (appConfig.backup.backupDir == null
+                            || appConfig.backup.backupDir.isEmpty()) {
                         return;
                     }
                     update("Hourly backup running...");

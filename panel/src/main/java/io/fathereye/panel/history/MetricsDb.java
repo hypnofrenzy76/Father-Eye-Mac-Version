@@ -42,11 +42,7 @@ public final class MetricsDb {
     private static final ObjectMapper CBOR = new ObjectMapper(new CBORFactory());
 
     public static Path defaultPath() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData == null || localAppData.isEmpty()) {
-            localAppData = System.getProperty("user.home", ".");
-        }
-        return Paths.get(localAppData, "FatherEye", "metrics.sqlite");
+        return io.fathereye.panel.util.PlatformPaths.appDataDir().resolve("metrics.sqlite");
     }
 
     private final Path dbPath;

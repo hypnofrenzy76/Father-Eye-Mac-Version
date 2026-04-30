@@ -3,6 +3,7 @@ package io.fathereye.panel.config;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import io.fathereye.panel.util.PlatformPaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,8 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * Top-level configuration POJO. Persisted as JSON at
- * <code>%LOCALAPPDATA%/FatherEye/config.json</code>. Hot-reloadable.
+ * Top-level configuration POJO. Persisted as JSON in the per-platform
+ * Father Eye AppData directory (see {@link PlatformPaths#appDataDir()}).
+ * Hot-reloadable.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public final class AppConfig {
@@ -31,11 +33,7 @@ public final class AppConfig {
     public AppConfig() {}
 
     public static Path defaultPath() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData == null || localAppData.isEmpty()) {
-            localAppData = System.getProperty("user.home", ".");
-        }
-        return Paths.get(localAppData, "FatherEye", "config.json");
+        return PlatformPaths.appDataDir().resolve("config.json");
     }
 
     public static AppConfig load(Path path) {
@@ -129,17 +127,56 @@ public final class AppConfig {
     }
 
     public static final class ServerRuntime {
-        public String workingDir = "C:/Users/lukeo/Desktop/TomCraft-Server";
-        public String javaPath = "C:/Program Files/Eclipse Adoptium/jdk-8.0.482.8-hotspot/bin/java.exe";
-        public String jvmArgs = "-Xmx8G -Xms4G -XX:+UseG1GC -XX:G1HeapRegionSize=4M -XX:MaxGCPauseMillis=100 -XX:+ParallelRefProcEnabled -noverify";
+        // Mac Pnl-Mac-1: defaults are placeholders that the Setup
+        // wizard fills in on first run. The panel won't try to
+        // auto-start with these placeholders (autoStart defaults to
+        // false; the wizard flips it to true once the server is
+        // installed). On Windows the upstream defaults are no longer
+        // shipped — the wizard handles install on every platform.
+        public String workingDir = defaultServerDir();
+        public String javaPath = defaultJavaPath();
+        // Mac fork (audit 7): align JVM args with ServerLaunchSpec.defaults()
+        // and SetupApp.writePanelConfig — Aikar's tuning for Forge 1.16.5
+        // on Java 8 with 12 GB heap. Drops the legacy -noverify flag
+        // (deprecated in Java 9, removed in Java 13; harmless on 8 but
+        // surfaces a deprecation warning in modern JVMs and confuses
+        // future maintainers).
+        public String jvmArgs = "-Xms8G -Xmx12G -XX:+UseG1GC -XX:+ParallelRefProcEnabled "
+                + "-XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions "
+                + "-XX:+DisableExplicitGC -XX:+AlwaysPreTouch "
+                + "-XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 "
+                + "-XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 "
+                + "-XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 "
+                + "-XX:InitiatingHeapOccupancyPercent=15 "
+                + "-XX:G1MixedGCLiveThresholdPercent=90 "
+                + "-XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 "
+                + "-XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1";
         public String jarName = "forge-1.16.5-36.2.39.jar";
         public String mainArgs = "nogui";
-        /** When true, the panel auto-starts the server on launch — making
-         *  Father Eye and the server effectively a single executable.
-         *  Defaults to true on Windows (where the hardcoded paths are
-         *  correct) and false elsewhere (Mac/Linux users must edit the
-         *  config first to point at their server install). */
-        public boolean autoStart = System.getProperty("os.name", "").toLowerCase().startsWith("windows");
+        /** Whether the panel auto-starts the server on launch.
+         *  Defaults to false on every platform — the Setup wizard sets
+         *  this to true after a successful first-run server install.
+         *  This avoids the previous behaviour where Windows users
+         *  shipped a panel that tried to start a server at hardcoded
+         *  Windows-specific paths that didn't exist on their machine. */
+        public boolean autoStart = false;
+
+        private static String defaultServerDir() {
+            // Default to a "Minecraft Server" folder under the user's
+            // home; the Setup wizard prompts for a different location.
+            return java.nio.file.Paths.get(System.getProperty("user.home", "."),
+                    "Minecraft Server").toString().replace('\\', '/');
+        }
+
+        private static String defaultJavaPath() {
+            // Empty string means "use $JAVA_HOME/bin/java or the
+            // first `java` on PATH". The Setup wizard resolves the
+            // actual path and writes it back here. Hardcoding a
+            // /usr/bin/java path on Mac would be wrong because Apple
+            // hasn't shipped a system Java since 10.7 — the user
+            // needs Temurin or Zulu in /Library/Java/...
+            return "";
+        }
         /** Pnl-43 (2026-04-26): when true (default), the panel shows the
          *  pre-boot configuration modal BEFORE auto-starting the server,
          *  so the user can review/edit RAM, JVM args and
@@ -201,7 +238,11 @@ public final class AppConfig {
     }
 
     public static final class Backup {
-        public String backupDir = "C:/Users/lukeo/Desktop/TomCraft-Server/backups";
+        // Mac Pnl-Mac-1: backupDir defaults to <workingDir>/backups
+        // resolved at first save. Empty here so the Setup wizard's
+        // server-folder choice flows through. AppConfig.load() also
+        // overrides this when cwd-auto-detection finds a Forge server.
+        public String backupDir = "";
         /** Pnl-54 (audit fix, 2026-04-27): default 10 -> 0 (unlimited).
          *  Pre-Pnl-54 retainCount was the only retention rule and 10
          *  worked for pre-stop backups (one per server stop). With

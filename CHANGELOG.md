@@ -2,6 +2,84 @@
 
 All notable changes per session, newest first.
 
+## 2026-04-29 (continued — full Mac compatibility pass)
+
+After the initial fork commit, applied a comprehensive Mac-compatibility
+pass guided by 10 parallel Opus audits. Notable changes:
+
+**Critical compatibility (audits 1, 4):**
+- JavaFX downgrade 21 -> **17.0.12**. JavaFX 21 hard-blocks any macOS
+  earlier than 11 (Big Sur) at runtime; the user's High Sierra 10.13.6
+  needs JFX 17. 17.0.12 chosen over 17.0.13 because Maven Central's
+  17.0.13 mac (Intel x64) classifier set is incomplete at fork time.
+- Added `java.datatransfer` to the jpackage `--add-modules` list
+  (JFreeChart-FX needs it for chart context-menu copy).
+- jpackage `LSMinimumSystemVersion=10.13.0` patched via `plutil -insert`
+  with `-replace` fallback (jpackage 17 omits the key by default).
+- `prism.order=es2,sw` baked into the bundle's `--java-options` AND
+  set defensively in `Launcher.main()`.
+
+**VRAM tuning for the AMD HD 6750M / 512 MB shared (audit 5):**
+- `prism.maxvram=256m`, `prism.targetvram=192m`,
+  `prism.disableRegionCaching=true` set in `Launcher.main()`.
+- `TILE_CACHE_LIMIT` 4096 -> 1024.
+- StatsPane `setMaximumItemCount` 900 -> 300 (matches the documented
+  5-min @ 1 Hz rolling window).
+
+**Mac path correctness (audit 2):**
+- Three-way `PlatformPaths` agreement (panel, bridge, setup); all
+  resolve to `~/Library/Application Support/FatherEye/` on macOS.
+- `App.java` startup error dialog now shows the platform-correct log
+  path instead of `%LOCALAPPDATA%`.
+- `MarkerDiscovery`, `MarkerFile`, `AppConfig`, `MetricsDb` all route
+  through `PlatformPaths.appDataDir()`.
+- `logback.xml` uses `${FATHEREYE_APPDATA}` system property set in
+  App's static block before LoggerFactory binds Logback.
+
+**FX-thread / IPC (audits 8, 9):**
+- Per-tile `Platform.runLater(redraw)` flood replaced with a coalesced
+  AnimationTimer driven by a `dirty` flag. Eliminates the FX-saturation
+  risk on the 2.5 GHz Sandy Bridge.
+- `PipeClient.chooseTransport` now refuses `named-pipe` on non-Windows
+  with a clear `IllegalStateException` instead of crashing on JNA's
+  `kernel32` load.
+- `MarkerDiscovery.discover()` validates marker `pid` via
+  `ProcessHandle.of(pid).isAlive()` and unlinks stale markers.
+- `MarkerFile.write()` uses temp-file + `ATOMIC_MOVE` to eliminate
+  partially-written-marker reads.
+
+**ServerLauncher Mac behavior (audit 6):**
+- `ServerLaunchSpec.resolveJavaPath()` now reads each candidate JDK's
+  `release` file and only returns a path whose `JAVA_VERSION` major is
+  8 (Forge 1.16.5 requirement). Prevents the "first JDK wins" trap
+  where Temurin 17 was returned to a server that needed Java 8.
+
+**Backup robustness (audits 7, 10):**
+- `BackupService.runBackup()` and `sweepStalePartials()` early-return
+  on empty `backupDir` instead of writing into cwd `/`.
+- `App.java` hourly backup runnable also gates on empty `backupDir`.
+
+**JVM args reconciled (audit 7):**
+- `AppConfig.ServerRuntime.jvmArgs` aligned with
+  `ServerLaunchSpec.defaults()` and `SetupApp.writePanelConfig` —
+  Aikar's tuning for Forge 1.16.5 with 12 GB heap. Dropped legacy
+  `-noverify`.
+
+**Setup wizard polish (audit 3):**
+- Forge installer JAR auto-deletes after a successful install so two
+  `forge-*.jar` files don't coexist in `serverDir`.
+- Cancel button now `task.cancel(true)` and `forgeProcess.destroyForcibly()`
+  so cancelling mid-Forge-install doesn't orphan the installer JVM.
+- Adoptium URLs include `&package=jdk` so the user lands on JDK
+  downloads (not JRE).
+- Java check page wording clarified: only JDK 8 is required on the
+  user's machine; JDK 17 ships inside Father Eye.app's bundled JRE.
+
+**Repo hygiene (audit 10):**
+- Deleted upstream's `stop-server.ps1` (Windows-only).
+- README updated with concrete install steps for High Sierra + JDK 17
+  pinning + JDK 8 Setup-wizard guidance.
+
 ## 2026-04-29
 
 - **Fork point: 0.3.0-mac.1.** Created the Mac-focused fork
