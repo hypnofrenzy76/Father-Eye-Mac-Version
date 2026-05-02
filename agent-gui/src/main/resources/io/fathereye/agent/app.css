@@ -1,0 +1,343 @@
+/*
+ * Claude-app aesthetic for the Father Eye Agent.
+ *
+ * Palette (matches the Claude web/desktop app as of 2026-Q1):
+ *   surface       #F4F1EA  warm cream background
+ *   surface-2     #FAF8F2  raised (input, code-output panels)
+ *   ink           #1F1F1E  primary text
+ *   ink-mute      #6E6E6D  secondary text, role labels
+ *   border        #E0DCD2  hairlines
+ *   accent        #D97757  Claude coral; used for user role + send button
+ *   error         #C0463E  destructive / error fills
+ *   code-bg       #1F1F1E  dark code blocks
+ *   code-fg       #E8E6E1  code text
+ *
+ * Type stack: system serif for role labels and headings (Charter on
+ * macOS), system sans for body. SF Mono / Menlo for code on macOS;
+ * Consolas as a fallback for non-mac dev runs.
+ */
+
+.root {
+    -fx-background-color: #F4F1EA;
+    -fx-font-family: -apple-system, "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    -fx-font-size: 14px;
+}
+
+/* ------------------------------- top bar -------------------------------- */
+
+.top-bar {
+    -fx-background-color: #F4F1EA;
+    -fx-border-color: transparent transparent #E0DCD2 transparent;
+    -fx-border-width: 0 0 1 0;
+}
+.app-title {
+    -fx-font-family: "Charter", "Georgia", "Times New Roman", serif;
+    -fx-font-size: 16px;
+    -fx-font-style: italic;
+    -fx-text-fill: #1F1F1E;
+}
+.cwd-label {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-text-fill: #6E6E6D;
+    -fx-padding: 0 0 0 8;
+}
+.status-label {
+    -fx-font-size: 12px;
+    -fx-text-fill: #6E6E6D;
+    -fx-padding: 0 8 0 0;
+}
+.status-busy {
+    -fx-text-fill: #D97757;
+}
+
+.ghost-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #6E6E6D;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 4 12 4 12;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+.ghost-button:hover {
+    -fx-background-color: rgba(0,0,0,0.04);
+    -fx-text-fill: #1F1F1E;
+}
+
+.model-picker {
+    -fx-background-color: transparent;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-padding: 2 4 2 8;
+    -fx-text-fill: #1F1F1E;
+}
+.model-picker .label {
+    -fx-text-fill: #1F1F1E;
+}
+
+/* ----------------------------- chat surface ----------------------------- */
+
+.chat-pane,
+.chat-pane > .viewport {
+    -fx-background-color: #F4F1EA;
+}
+.chat-pane > .scroll-bar:vertical {
+    -fx-background-color: transparent;
+    -fx-pref-width: 10;
+}
+.chat-pane > .scroll-bar:vertical .thumb {
+    -fx-background-color: #C8C2B5;
+    -fx-background-radius: 4;
+}
+.chat-pane > .scroll-bar:vertical .track,
+.chat-pane > .scroll-bar:vertical .increment-button,
+.chat-pane > .scroll-bar:vertical .decrement-button {
+    -fx-background-color: transparent;
+}
+
+.chat-column {
+    -fx-padding: 32 32 16 32;
+    -fx-spacing: 28;
+    -fx-max-width: 760;
+}
+
+/* ------------------------------ messages -------------------------------- */
+
+.message {
+    -fx-spacing: 6;
+    -fx-max-width: 720;
+}
+.message-role {
+    -fx-font-family: "Charter", "Georgia", "Times New Roman", serif;
+    -fx-font-size: 11.5px;
+    -fx-font-style: italic;
+    -fx-text-fill: #6E6E6D;
+}
+.message-user .message-role {
+    -fx-text-fill: #D97757;
+}
+.message-error .message-role {
+    -fx-text-fill: #C0463E;
+}
+.message-body {
+    -fx-spacing: 10;
+}
+.message-plain {
+    -fx-text-fill: #C0463E;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 12px;
+}
+
+/* ----------------------------- markdown body ---------------------------- */
+
+.md-body {
+    -fx-spacing: 10;
+}
+.md-paragraph {
+    -fx-line-spacing: 4;
+}
+.md-paragraph .text {
+    -fx-fill: #1F1F1E;
+    -fx-font-size: 14px;
+}
+
+/* Inline emphasis classes apply to .text nodes inside a TextFlow. */
+.text.md-bold     { -fx-font-weight: bold; }
+.text.md-italic   { -fx-font-style: italic; }
+.text.md-inline-code {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 12.5px;
+    -fx-fill: #1F1F1E;
+}
+.text.md-link {
+    -fx-fill: #D97757;
+    -fx-underline: true;
+}
+.text.md-link-url {
+    -fx-fill: #6E6E6D;
+    -fx-font-size: 12px;
+}
+
+/* Headings. JavaFX TextFlow doesn't honor -fx-font-size on the flow
+ * itself; we set it on the .text children via descendant selectors. */
+.md-heading { -fx-padding: 6 0 2 0; }
+.md-h1 .text { -fx-font-family: "Charter", "Georgia", serif; -fx-font-size: 21px; -fx-font-weight: bold; -fx-fill: #1F1F1E; }
+.md-h2 .text { -fx-font-family: "Charter", "Georgia", serif; -fx-font-size: 18px; -fx-font-weight: bold; -fx-fill: #1F1F1E; }
+.md-h3 .text { -fx-font-family: "Charter", "Georgia", serif; -fx-font-size: 16px; -fx-font-weight: bold; -fx-fill: #1F1F1E; }
+.md-h4 .text,
+.md-h5 .text,
+.md-h6 .text { -fx-font-size: 14px; -fx-font-weight: bold; -fx-fill: #1F1F1E; }
+
+.md-blockquote {
+    -fx-padding: 4 0 4 14;
+    -fx-border-color: #D97757 transparent transparent transparent;
+    -fx-border-width: 0 0 0 3;
+    -fx-spacing: 8;
+}
+.md-blockquote .md-paragraph .text {
+    -fx-fill: #6E6E6D;
+}
+
+.md-list {
+    -fx-spacing: 4;
+    -fx-padding: 2 0 2 8;
+}
+.md-list-item {
+    -fx-spacing: 8;
+    -fx-alignment: top-left;
+}
+.md-list-marker {
+    -fx-fill: #6E6E6D;
+}
+.md-list-marker-flow {
+    -fx-min-width: 22;
+    -fx-pref-width: 22;
+}
+.md-list-content {
+    -fx-spacing: 4;
+}
+
+.md-code-block {
+    -fx-background-color: #1F1F1E;
+    -fx-background-radius: 10;
+    -fx-padding: 12 14 12 14;
+    -fx-spacing: 6;
+}
+.md-code-lang-row {
+    -fx-padding: 0 0 4 0;
+}
+.md-code-lang {
+    -fx-fill: #9B9994;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 10.5px;
+}
+.md-code-body {
+    -fx-line-spacing: 2;
+}
+.md-code {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 12.5px;
+    -fx-fill: #E8E6E1;
+}
+
+.md-hr {
+    -fx-background-color: #E0DCD2;
+    -fx-pref-height: 1;
+    -fx-min-height: 1;
+    -fx-max-height: 1;
+}
+
+/* ------------------------------ tool cards ------------------------------ */
+
+.tool-call {
+    -fx-background-color: #FAF8F2;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+    -fx-padding: 0;
+}
+.tool-call-error {
+    -fx-border-color: #C0463E;
+}
+.tool-call-header {
+    -fx-padding: 9 14 9 14;
+    -fx-cursor: hand;
+}
+.tool-call-arrow {
+    -fx-fill: #D97757;
+    -fx-font-size: 12px;
+}
+.tool-call-title {
+    -fx-fill: #1F1F1E;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 12px;
+}
+.tool-call-body {
+    -fx-padding: 0 0 8 0;
+}
+.tool-call-scroll,
+.tool-call-scroll > .viewport {
+    -fx-background-color: transparent;
+    -fx-padding: 0 14 8 14;
+}
+.tool-call-scroll > .scroll-bar:vertical {
+    -fx-pref-width: 8;
+}
+.tool-call-output-flow {
+    -fx-padding: 8 12 8 12;
+    -fx-background-color: rgba(0,0,0,0.03);
+    -fx-background-radius: 6;
+}
+.tool-call-output {
+    -fx-fill: #1F1F1E;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11.5px;
+}
+.tool-call-error .tool-call-output {
+    -fx-fill: #C0463E;
+}
+
+/* ------------------------------- input bar ------------------------------ */
+
+.input-bar {
+    -fx-background-color: #F4F1EA;
+    -fx-border-color: #E0DCD2 transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+.input-area {
+    -fx-background-color: #FAF8F2;
+    -fx-background-radius: 14;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 14;
+    -fx-padding: 4;
+    -fx-font-size: 14px;
+    -fx-text-fill: #1F1F1E;
+    -fx-prompt-text-fill: #9B9994;
+}
+.input-area .content {
+    -fx-background-color: transparent;
+    -fx-padding: 8 12 8 12;
+}
+.input-area:focused {
+    -fx-border-color: #D97757;
+}
+.input-area .scroll-pane,
+.input-area .scroll-pane .viewport,
+.input-area .scroll-pane > .viewport {
+    -fx-background-color: transparent;
+}
+
+.send-button {
+    -fx-background-color: #D97757;
+    -fx-text-fill: #FFFFFF;
+    -fx-background-radius: 12;
+    -fx-padding: 10 22 10 22;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-cursor: hand;
+}
+.send-button:hover { -fx-background-color: #C76A4A; }
+.send-button:pressed { -fx-background-color: #B85F40; }
+.send-button:disabled {
+    -fx-background-color: #E0DCD2;
+    -fx-text-fill: #9B9994;
+    -fx-cursor: default;
+}
+
+.input-area:disabled {
+    -fx-opacity: 0.6;
+}
+
+/* ----------------------------- missing-key view ------------------------- */
+
+.missing-key-body {
+    -fx-text-fill: #1F1F1E;
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 12.5px;
+    -fx-line-spacing: 4;
+}

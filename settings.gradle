@@ -15,12 +15,14 @@ rootProject.name = 'fathereye'
 include 'mapcore'
 include 'panel'
 include 'setup'
+include 'agent-gui'
 
 // bridge and map are Forge mods that require ForgeGradle from
 // https://maven.minecraftforge.net (often 403/auth-gated). They are not
-// needed to build the Mac panel .app, so include them only when the
-// caller opts in via `-PincludeForge=true`. Default Mac app build
-// (./gradlew :panel:jpackageMacApp / jpackageLinuxApp) skips them.
+// needed to build the Mac panel .app or the agent-gui app, so include
+// them only when the caller opts in via `-PincludeForge=true`. The
+// default Mac builds (./gradlew :panel:jpackageMacApp /
+// :agent-gui:jpackageMacApp / jpackageLinuxApp) skip them.
 if (settings.hasProperty('includeForge') && settings.getProperty('includeForge') == 'true') {
     include 'bridge'
     include 'map'

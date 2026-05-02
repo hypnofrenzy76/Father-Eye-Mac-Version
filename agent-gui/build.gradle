@@ -1,0 +1,207 @@
+plugins {
+    id 'application'
+    id 'java'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+version = project.findProperty('agentGuiVersion') ?: '0.1.0-mac.1'
+archivesBaseName = 'fathereye-agent-gui'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    // Same Launcher trick as panel/: a non-Application class calls
+    // Application.launch() so JPMS doesn't reject Application.main().
+    mainClass = 'io.fathereye.agent.Launcher'
+}
+
+javafx {
+    version = project.javafxVersion
+    // No javafx.swing or javafx.web. The chat is rendered with native
+    // JavaFX controls — no embedded WebKit, no Swing interop.
+    modules = ['javafx.base', 'javafx.graphics', 'javafx.controls']
+}
+
+dependencies {
+    // Anthropic Java SDK — talks directly to api.anthropic.com over HTTPS.
+    // No Node.js dep; no Claude-Code-CLI dep. Works on macOS 10.13.6.
+    implementation 'com.anthropic:anthropic-java:2.17.0'
+
+    // Markdown parsing. The renderer walks the AST and emits JavaFX
+    // TextFlow nodes — we never produce HTML, so no WebView needed.
+    implementation 'org.commonmark:commonmark:0.21.0'
+
+    // Used to (a) parse tool_use input JSON into Map<String,Object> and
+    // (b) JSON-encode args. The Anthropic SDK already pulls Jackson, so
+    // declaring it here pins the version explicitly.
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// =========================================================================
+// Mac fork build pipeline (mirrors panel/build.gradle).
+//
+//   :agent-gui:jpackageMacApp -> dist/Father Eye Agent.app
+//   :agent-gui:jpackageMacDmg -> dist/Father Eye Agent.dmg
+//
+// Same prism.* tuning as panel/ for the AMD HD 6750M (TeraScale 2,
+// non-Metal). 10.13.0 LSMinimumSystemVersion patched into Info.plist
+// so Finder accepts the .app on High Sierra.
+// =========================================================================
+
+def feAgentJdkModules = [
+        'java.base', 'java.desktop', 'java.logging', 'java.management',
+        'java.naming', 'java.net.http', 'java.prefs', 'java.scripting',
+        'java.sql', 'java.xml', 'java.xml.crypto', 'java.security.jgss',
+        'jdk.unsupported', 'jdk.crypto.ec', 'jdk.crypto.cryptoki',
+        'jdk.naming.dns', 'jdk.localedata'
+].join(',')
+def feAgentFxModules = 'javafx.base,javafx.graphics,javafx.controls'
+
+def feAgentJavaOptions = [
+        '-Dprism.order=es2,sw',
+        '-Dprism.lcdtext=false',
+        '-Dprism.allowhidpi=false',
+        '-Dprism.maxvram=256m',
+        '-Dprism.targetvram=192m',
+        '-Dprism.disableRegionCaching=true',
+        // High Sierra TLS: explicit 1.2/1.3 so Anthropic API handshake
+        // doesn't fall back to TLS 1.0 (which would be rejected anyway,
+        // but the failure mode is cleaner with a pin).
+        '-Djdk.tls.client.protocols=TLSv1.2,TLSv1.3'
+]
+
+def feAgentMacBundleId = 'com.fathereye.agent.mac'
+def feAgentMacMinOS = '10.13.0'
+def feAgentAppName = 'Father Eye Agent'
+
+tasks.register('jpackageMacApp') {
+    group = 'distribution'
+    description = "Build ${feAgentAppName}.app via jpackage (run on macOS only). Targets High Sierra 10.13.6+."
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('mac')) {
+            throw new GradleException(
+                    "jpackageMacApp must run on macOS (current host: ${os}). " +
+                    "jpackage cannot cross-compile between OSes.")
+        }
+        def libDir = layout.buildDirectory.dir('install/agent-gui/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def existing = new File(outDir, "${feAgentAppName}.app")
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-agent-gui-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
+
+        def cmd = [
+                jpkg,
+                '--type', 'app-image',
+                '--name', feAgentAppName,
+                '--app-version', macAppVersion,
+                '--input', libDir.absolutePath,
+                '--main-jar', mainJar.name,
+                '--main-class', 'io.fathereye.agent.Launcher',
+                '--module-path', libDir.absolutePath,
+                '--add-modules', "${feAgentJdkModules},${feAgentFxModules}",
+                '--dest', outDir.absolutePath,
+                '--mac-package-identifier', feAgentMacBundleId,
+                '--mac-package-name', feAgentAppName,
+                '--vendor', 'Father Eye'
+        ]
+        feAgentJavaOptions.each { cmd << '--java-options' << it }
+        exec { commandLine cmd }
+
+        // Same LSMinimumSystemVersion patch as panel/. jpackage 17 omits
+        // the key by default for --type app-image; insert with -insert,
+        // fall back to -replace if it already exists.
+        def plist = new File(existing, 'Contents/Info.plist')
+        if (plist.exists()) {
+            def insertResult = exec {
+                commandLine 'plutil', '-insert', 'LSMinimumSystemVersion', '-string', feAgentMacMinOS, plist.absolutePath
+                ignoreExitValue = true
+            }
+            if (insertResult.exitValue != 0) {
+                exec { commandLine 'plutil', '-replace', 'LSMinimumSystemVersion', '-string', feAgentMacMinOS, plist.absolutePath }
+            }
+            println "Set LSMinimumSystemVersion=${feAgentMacMinOS} in ${plist}"
+        }
+        println "jpackage output -> ${outDir}/${feAgentAppName}.app"
+    }
+}
+
+tasks.register('jpackageMacDmg') {
+    group = 'distribution'
+    description = "Build ${feAgentAppName}.dmg installer (run on macOS only)."
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('mac')) {
+            throw new GradleException("jpackageMacDmg must run on macOS (current host: ${os}).")
+        }
+        def libDir = layout.buildDirectory.dir('install/agent-gui/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-agent-gui-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+        def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
+
+        def cmd = [
+                jpkg,
+                '--type', 'dmg',
+                '--name', feAgentAppName,
+                '--app-version', macAppVersion,
+                '--input', libDir.absolutePath,
+                '--main-jar', mainJar.name,
+                '--main-class', 'io.fathereye.agent.Launcher',
+                '--module-path', libDir.absolutePath,
+                '--add-modules', "${feAgentJdkModules},${feAgentFxModules}",
+                '--dest', outDir.absolutePath,
+                '--mac-package-identifier', feAgentMacBundleId,
+                '--mac-package-name', feAgentAppName,
+                '--vendor', 'Father Eye'
+        ]
+        feAgentJavaOptions.each { cmd << '--java-options' << it }
+        exec { commandLine cmd }
+        println "macOS dmg -> ${outDir}/${feAgentAppName}-${macAppVersion}.dmg"
+    }
+}
+
+// Same 0.x -> 1.x bundle-version remap as panel/. jpackage rejects an
+// app-version starting with 0; bundle metadata becomes 1.X.Y while the
+// in-app project.version stays 0.x-mac.N.
+String projectVersionToMacBundleVersion(String v) {
+    if (v.startsWith('0.')) {
+        String tail = v.substring(2)
+        int dash = tail.indexOf('-')
+        if (dash > 0) tail = tail.substring(0, dash)
+        return '1.' + tail
+    }
+    int dash = v.indexOf('-')
+    return dash > 0 ? v.substring(0, dash) : v
+}
