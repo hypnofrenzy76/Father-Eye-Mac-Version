@@ -13,7 +13,15 @@ plugins {
 rootProject.name = 'fathereye'
 
 include 'mapcore'
-include 'bridge'
-include 'map'
 include 'panel'
 include 'setup'
+
+// bridge and map are Forge mods that require ForgeGradle from
+// https://maven.minecraftforge.net (often 403/auth-gated). They are not
+// needed to build the Mac panel .app, so include them only when the
+// caller opts in via `-PincludeForge=true`. Default Mac app build
+// (./gradlew :panel:jpackageMacApp / jpackageLinuxApp) skips them.
+if (settings.hasProperty('includeForge') && settings.getProperty('includeForge') == 'true') {
+    include 'bridge'
+    include 'map'
+}

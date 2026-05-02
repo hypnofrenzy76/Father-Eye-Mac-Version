@@ -201,6 +201,64 @@ tasks.register('jpackageMacApp') {
     }
 }
 
+// =========================================================================
+// Linux jpackage target.
+//
+// This Mac fork is meant to ship a macOS .app, but the build pipeline also
+// supports producing a Linux app-image so the panel can be developed and
+// smoke-tested on a Linux host (e.g. the CI runner used to assemble these
+// commits, or a Linux dev workstation). The same JVM properties are baked
+// in via --java-options so the runtime behavior matches the Mac bundle as
+// closely as the platform allows. JFX 17 on Linux uses prism-es2 against
+// X11 / GLX — no Metal / CGL pixel-format quirks to work around, so the
+// AMD-HD-6750M-specific options (allowhidpi=false) are still passed for
+// behavioral parity but are no-ops on Linux.
+//
+// Output:
+//   :panel:jpackageLinuxApp   -> dist/Father Eye/   (run dist/Father\ Eye/bin/Father\ Eye)
+// =========================================================================
+
+tasks.register('jpackageLinuxApp') {
+    group = 'distribution'
+    description = 'Build a Linux app-image via jpackage (run on Linux only). Mirrors jpackageMacApp for cross-platform smoke tests.'
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('linux')) {
+            throw new GradleException(
+                    "jpackageLinuxApp must run on Linux (current host: ${os}).")
+        }
+        def libDir = layout.buildDirectory.dir('install/panel/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def appName = 'Father Eye'
+        def existing = new File(outDir, appName)
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-panel-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def cmd = [
+                jpkg,
+                '--type', 'app-image',
+                '--name', appName,
+                '--app-version', projectVersionToMacBundleVersion(project.version.toString()),
+                '--input', libDir.absolutePath,
+                '--main-jar', mainJar.name,
+                '--main-class', 'io.fathereye.panel.Launcher',
+                '--module-path', libDir.absolutePath,
+                '--add-modules', "${fePanelJdkModules},${fePanelFxModules}",
+                '--dest', outDir.absolutePath,
+                '--vendor', 'Father Eye'
+        ]
+        fePanelJavaOptions.each { cmd << '--java-options' << it }
+        exec { commandLine cmd }
+        println "jpackage Linux output -> ${outDir}/${appName}/"
+    }
+}
+
 tasks.register('jpackageMacDmg') {
     group = 'distribution'
     description = 'Build a macOS .dmg installer (run on macOS only). Wraps Father Eye.app for drag-to-Applications install.'
