@@ -1,43 +1,45 @@
 package io.fathereye.agent.agent;
 
-import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.core.JsonValue;
-import com.anthropic.models.messages.CacheControlEphemeral;
-import com.anthropic.models.messages.ContentBlock;
-import com.anthropic.models.messages.ContentBlockParam;
-import com.anthropic.models.messages.Message;
-import com.anthropic.models.messages.MessageCreateParams;
-import com.anthropic.models.messages.MessageParam;
-import com.anthropic.models.messages.StopReason;
-import com.anthropic.models.messages.TextBlockParam;
-import com.anthropic.models.messages.ToolResultBlockParam;
-import com.anthropic.models.messages.ToolUseBlockParam;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import javafx.application.Platform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Drives the Claude agent loop on a background thread and routes events
- * back to the FX thread via a {@link Listener} so the UI can render them.
+ * Drives a Claude Code CLI subprocess as the agent backend.
  *
- * <p>Manual tool-use loop, not the BetaToolRunner. We need fine-grained
- * control over per-block UI rendering (showing each tool call as a
- * collapsible card, separating user messages from tool_results) and the
- * runner abstracts that away.
+ * <p>Pipes user messages in as JSONL on stdin
+ * ({@code --input-format stream-json}) and reads the agent's JSONL event
+ * stream out ({@code --output-format stream-json --verbose}), then
+ * dispatches each event to the {@link Listener} on the FX thread.
  *
- * <p>Conversation history lives here as the source of truth for the API
- * (a {@code List<MessageParam>}). The UI maintains its own parallel
- * representation for display; the two never share objects.
+ * <p>Why a subprocess: by delegating to Claude Code, the app uses
+ * whichever auth Claude Code is logged in with, so a Claude.ai Pro/Max
+ * subscription works (no API credits required) and we get Claude Code's
+ * full tool surface (Read/Write/Edit/Bash/Glob/Grep) instead of the five
+ * tools we re-implemented locally.
+ *
+ * <p>Tool execution happens inside Claude Code; this class only renders
+ * the resulting events to the UI. The Anthropic Java SDK is no longer a
+ * dependency.
  */
 public final class AgentService {
 
@@ -52,195 +54,342 @@ public final class AgentService {
         void onError(Throwable t);
     }
 
-    private static final long MAX_TOKENS = 32_000L;
-    private static final String SYSTEM_PROMPT_TEMPLATE = """
-            You are a coding assistant running in a desktop app on macOS.
-            Working directory: %s
-
-            You have these tools:
-              - read_file(path)              read a text file
-              - write_file(path, content)    create or overwrite a file
-              - edit_file(path, old, new)    replace exact unique text in a file
-              - list_dir(path)               list directory contents
-              - bash(command, description)   run a shell command in the cwd
-
-            Guidelines:
-              - Read a file before editing it.
-              - Prefer edit_file over write_file for existing files.
-              - Use bash for git, build, test, grep, find — not for file edits.
-              - Format responses with Markdown. Use code fences for code, **bold** for emphasis.
-              - Keep responses concise; the user is reading them in a small chat window.
-            """;
-
-    private final AnthropicClient client;
-    private final ObjectMapper mapper = new ObjectMapper();
-    private final ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "agent-loop");
-        t.setDaemon(true);
-        return t;
-    });
-
-    private final List<MessageParam> history = new ArrayList<>();
     private final Path cwd;
     private volatile String model;
+    private final String claudePath;
+    private final ObjectMapper mapper = new ObjectMapper();
 
-    public AgentService(Path cwd, String model) {
+    /** Map tool_use_id -> tool_name so tool_result events can be tagged. */
+    private final Map<String, String> pendingToolNames = new HashMap<>();
+
+    private final ExecutorService readerThread = daemon("claude-reader");
+    private final ExecutorService stderrThread = daemon("claude-stderr");
+
+    /** Guarded by {@code this} (see {@link #spawn}, {@link #respawn}, {@link #send}). */
+    private Process process;
+    /** Guarded by {@code this}. */
+    private BufferedWriter stdin;
+    private volatile Listener currentListener;
+
+    public AgentService(Path cwd, String model) throws IOException {
         this.cwd = cwd;
         this.model = model;
-        this.client = AnthropicOkHttpClient.fromEnv();
+        this.claudePath = findClaude();
+        spawn();
     }
 
-    public void setModel(String model) { this.model = model; }
+    public synchronized void setModel(String model) {
+        if (model == null || model.equals(this.model)) return;
+        this.model = model;
+        // Respawn so the new model takes effect on the next user turn.
+        // This also clears the conversation history — Claude Code does not
+        // expose a model-switch verb mid-session, so a clean restart is
+        // the cleanest semantics. The user already had to click the model
+        // picker explicitly to land here.
+        respawn();
+    }
     public String getModel() { return model; }
     public Path cwd() { return cwd; }
 
-    public void clearHistory() {
-        synchronized (history) { history.clear(); }
+    public synchronized void clearHistory() {
+        respawn();
     }
 
     /** Submits a user message. Returns immediately; events stream via the listener. */
-    public void send(String userText, Listener listener) {
-        synchronized (history) {
-            // Wrap the user text in a TextBlockParam so every history
-            // entry is uniformly contentOfBlockParams. Avoids relying on
-            // a String overload whose exact builder method name varies
-            // across SDK minor versions.
-            history.add(MessageParam.builder()
-                    .role(MessageParam.Role.USER)
-                    .contentOfBlockParams(List.of(
-                            ContentBlockParam.ofText(
-                                    TextBlockParam.builder().text(userText).build())))
-                    .build());
+    public synchronized void send(String userText, Listener listener) {
+        this.currentListener = listener;
+        if (process == null || !process.isAlive()) {
+            try { spawn(); } catch (IOException e) {
+                Platform.runLater(() -> listener.onError(e));
+                return;
+            }
         }
-        exec.submit(() -> runLoop(listener));
+        try {
+            ObjectNode msg = mapper.createObjectNode();
+            msg.put("type", "user");
+            ObjectNode message = msg.putObject("message");
+            message.put("role", "user");
+            ArrayNode content = message.putArray("content");
+            ObjectNode textBlock = content.addObject();
+            textBlock.put("type", "text");
+            textBlock.put("text", userText);
+            stdin.write(mapper.writeValueAsString(msg));
+            stdin.newLine();
+            stdin.flush();
+        } catch (IOException e) {
+            LOG.error("write to claude stdin failed", e);
+            Platform.runLater(() -> listener.onError(e));
+        }
     }
 
-    private void runLoop(Listener listener) {
+    public synchronized void shutdown() {
         try {
-            while (true) {
-                // Snapshot history under the lock, then release before
-                // the API call. Holding the lock through the network
-                // round-trip would block the FX thread if it ever tried
-                // to add another user message (it can't today because
-                // the input is disabled while busy, but the lock-holding
-                // pattern is fragile to that invariant changing).
-                List<MessageParam> snapshot;
-                synchronized (history) {
-                    snapshot = new ArrayList<>(history);
+            if (stdin != null) stdin.close();
+        } catch (IOException ignored) {}
+        if (process != null) {
+            process.destroy();
+            try {
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                process.destroyForcibly();
+            }
+        }
+        readerThread.shutdownNow();
+        stderrThread.shutdownNow();
+    }
 
-                MessageCreateParams.Builder builder = MessageCreateParams.builder()
-                        .model(model)
-                        .maxTokens(MAX_TOKENS)
-                        .systemOfTextBlockParams(List.of(
-                                TextBlockParam.builder()
-                                        .text(String.format(SYSTEM_PROMPT_TEMPLATE, cwd))
-                                        .cacheControl(CacheControlEphemeral.builder().build())
-                                        .build()))
-                        .messages(snapshot);
-                // Tools added one at a time — the .addTool(Tool) overload
-                // wraps in ToolUnion automatically, so we don't have to
-                // construct ToolUnions ourselves.
-                for (var tool : ToolSchemas.all()) {
-                    builder.addTool(tool);
-                }
-                Message response = client.messages().create(builder.build());
+    // -------------------------------------------------------------------
+    // Subprocess management
+    // -------------------------------------------------------------------
 
-                // Append the assistant turn to history. Convert response
-                // ContentBlocks back to ContentBlockParams so they roundtrip.
-                List<ContentBlockParam> assistantParams = toParams(response.content());
-                synchronized (history) {
-                    history.add(MessageParam.builder()
-                            .role(MessageParam.Role.ASSISTANT)
-                            .contentOfBlockParams(assistantParams)
-                            .build());
-                }
+    /**
+     * Locate the {@code claude} CLI on disk.
+     *
+     * <p>We can't rely on {@code PATH} because a Finder-launched .app
+     * inherits a minimal launchd PATH ({@code /usr/bin:/bin:/usr/sbin:/sbin})
+     * that does not include {@code /usr/local/bin}, {@code /opt/homebrew/bin},
+     * or any user-shell exports. Run a login+interactive zsh and ask it
+     * to resolve {@code claude}; that picks up whatever the user has in
+     * their {@code .zshrc} / {@code .zprofile}. Allow {@code CLAUDE_PATH}
+     * as an explicit override for non-standard installs.
+     */
+    private static String findClaude() throws IOException {
+        String override = System.getenv("CLAUDE_PATH");
+        if (override != null && !override.isBlank()) return override;
 
-                // Render text blocks first, then tool calls.
-                StringBuilder text = new StringBuilder();
-                for (ContentBlock block : response.content()) {
-                    block.text().ifPresent(t -> {
-                        if (text.length() > 0) text.append("\n\n");
-                        text.append(t.text());
-                    });
+        // -lic: login + interactive + run command. Login picks up
+        // /etc/zprofile + ~/.zprofile + ~/.zlogin; interactive picks up
+        // ~/.zshrc. Most users export their npm/homebrew bin from one of
+        // those.
+        ProcessBuilder pb = new ProcessBuilder("/bin/zsh", "-lic", "command -v claude || true");
+        pb.redirectErrorStream(false);
+        Process p = pb.start();
+        String out;
+        try {
+            out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            p.waitFor(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while looking for claude CLI", e);
+        }
+        if (!out.isEmpty() && new File(out.split("\\R", 2)[0].trim()).canExecute()) {
+            return out.split("\\R", 2)[0].trim();
+        }
+        // Fallback: scan common install locations.
+        String home = System.getProperty("user.home");
+        String[] candidates = {
+                "/usr/local/bin/claude",
+                "/opt/homebrew/bin/claude",
+                home + "/.npm-global/bin/claude",
+                home + "/.local/bin/claude",
+                home + "/n/bin/claude"
+        };
+        for (String c : candidates) {
+            if (new File(c).canExecute()) return c;
+        }
+        throw new IOException(
+                "Claude Code CLI not found on PATH or in any of "
+                        + String.join(", ", candidates) + ". "
+                        + "Install with `npm install -g @anthropic-ai/claude-code`, "
+                        + "then run `claude /login` to authenticate with your Pro/Max "
+                        + "subscription. Set CLAUDE_PATH to override.");
+    }
+
+    private synchronized void spawn() throws IOException {
+        ProcessBuilder pb = new ProcessBuilder(
+                claudePath,
+                "--print",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--model", model
+        );
+        pb.directory(cwd.toFile());
+        pb.redirectErrorStream(false);
+        // Surface PATH so npm-installed tools the agent calls (node, etc.)
+        // resolve. We inherit our own env, which already contains our
+        // (login-shell-augmented) PATH if AgentApp was launched correctly,
+        // or the launchd minimal PATH otherwise — neither breaks claude
+        // itself, but the agent's bash tool will see whatever we pass.
+        process = pb.start();
+        stdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
+        BufferedReader stdoutR = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+        BufferedReader stderrR = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8));
+        readerThread.submit(() -> readLoop(stdoutR));
+        stderrThread.submit(() -> stderrLoop(stderrR));
+        synchronized (pendingToolNames) { pendingToolNames.clear(); }
+    }
+
+    private synchronized void respawn() {
+        try { if (stdin != null) stdin.close(); } catch (IOException ignored) {}
+        if (process != null && process.isAlive()) {
+            process.destroy();
+            try { process.waitFor(2, TimeUnit.SECONDS); } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        try {
+            spawn();
+        } catch (IOException e) {
+            LOG.error("respawn failed", e);
+            Listener l = currentListener;
+            if (l != null) Platform.runLater(() -> l.onError(e));
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Event dispatch
+    // -------------------------------------------------------------------
+
+    private void readLoop(BufferedReader stdout) {
+        try {
+            String line;
+            while ((line = stdout.readLine()) != null) {
+                if (line.isBlank()) continue;
+                Listener l = currentListener;
+                if (l == null) continue;
+                try {
+                    JsonNode event = mapper.readTree(line);
+                    dispatch(event, l);
+                } catch (Exception e) {
+                    LOG.warn("could not parse claude event: {}", line, e);
                 }
+            }
+        } catch (IOException e) {
+            LOG.debug("claude stdout closed: {}", e.getMessage());
+        }
+    }
+
+    private void stderrLoop(BufferedReader stderr) {
+        try {
+            String line;
+            while ((line = stderr.readLine()) != null) {
+                LOG.warn("[claude stderr] {}", line);
+            }
+        } catch (IOException e) {
+            LOG.debug("claude stderr closed: {}", e.getMessage());
+        }
+    }
+
+    private void dispatch(JsonNode event, Listener l) {
+        String type = event.path("type").asText();
+        switch (type) {
+            case "system":
+                // {type: "system", subtype: "init", session_id, model, tools, ...}
+                // No UI render. We could capture session_id for later --resume
+                // but a persistent process makes that unnecessary.
+                LOG.debug("system event subtype={}", event.path("subtype").asText());
+                break;
+            case "assistant":
+                handleAssistant(event, l);
+                break;
+            case "user":
+                handleUser(event, l);
+                break;
+            case "result":
+                handleResult(event, l);
+                break;
+            default:
+                LOG.debug("unhandled event type: {}", type);
+        }
+    }
+
+    private void handleAssistant(JsonNode event, Listener l) {
+        JsonNode content = event.path("message").path("content");
+        if (!content.isArray()) return;
+        StringBuilder text = new StringBuilder();
+        for (JsonNode block : content) {
+            String btype = block.path("type").asText();
+            if ("text".equals(btype)) {
+                if (text.length() > 0) text.append("\n\n");
+                text.append(block.path("text").asText());
+            } else if ("tool_use".equals(btype)) {
+                // Flush any text before this tool_use so on-screen order
+                // matches the assistant turn's block order.
                 if (text.length() > 0) {
                     final String md = text.toString();
-                    Platform.runLater(() -> listener.onAssistantText(md));
+                    text.setLength(0);
+                    Platform.runLater(() -> l.onAssistantText(md));
                 }
-
-                StopReason stop = response.stopReason().orElse(null);
-                if (stop != StopReason.TOOL_USE) {
-                    Platform.runLater(listener::onTurnComplete);
-                    return;
-                }
-
-                // Execute every tool_use in the response, then append all
-                // the tool_results in a single user message (the API
-                // requires one tool_result per tool_use, all in the same
-                // message). Capture name/input/result in final locals so
-                // the FX-thread lambdas see snapshot values.
-                List<ContentBlockParam> resultBlocks = new ArrayList<>();
-                for (ContentBlock block : response.content()) {
-                    if (block.toolUse().isEmpty()) continue;
-                    var tu = block.toolUse().get();
-                    final String toolName = tu.name();
-                    final String toolUseId = tu.id();
-                    final Map<String, Object> input = parseInput(tu._input());
-                    Platform.runLater(() -> listener.onToolCall(toolName, input));
-                    final Tools.Result r = Tools.execute(toolName, input, cwd);
-                    Platform.runLater(() -> listener.onToolResult(toolName, r));
-                    resultBlocks.add(ContentBlockParam.ofToolResult(
-                            ToolResultBlockParam.builder()
-                                    .toolUseId(toolUseId)
-                                    .content(r.content())
-                                    .isError(r.error())
-                                    .build()));
-                }
-                synchronized (history) {
-                    history.add(MessageParam.builder()
-                            .role(MessageParam.Role.USER)
-                            .contentOfBlockParams(resultBlocks)
-                            .build());
-                }
-                // Loop: ask Claude what to do with the tool results.
+                final String name = block.path("name").asText();
+                final String id = block.path("id").asText();
+                final Map<String, Object> input = parseInput(block.path("input"));
+                synchronized (pendingToolNames) { pendingToolNames.put(id, name); }
+                Platform.runLater(() -> l.onToolCall(name, input));
             }
-        } catch (Throwable t) {
-            LOG.error("agent loop failed", t);
-            Platform.runLater(() -> listener.onError(t));
+        }
+        if (text.length() > 0) {
+            final String md = text.toString();
+            Platform.runLater(() -> l.onAssistantText(md));
         }
     }
 
-    private List<ContentBlockParam> toParams(List<ContentBlock> content) {
-        List<ContentBlockParam> out = new ArrayList<>();
-        for (ContentBlock block : content) {
-            block.text().ifPresent(t ->
-                    out.add(ContentBlockParam.ofText(
-                            TextBlockParam.builder().text(t.text()).build())));
-            block.toolUse().ifPresent(tu ->
-                    out.add(ContentBlockParam.ofToolUse(
-                            ToolUseBlockParam.builder()
-                                    .id(tu.id())
-                                    .name(tu.name())
-                                    .input(tu._input())
-                                    .build())));
+    private void handleUser(JsonNode event, Listener l) {
+        // Echo of the agent's tool_result feedback to the model. We render
+        // these as the result of the matching ToolCallCard.
+        JsonNode content = event.path("message").path("content");
+        if (!content.isArray()) return;
+        for (JsonNode block : content) {
+            if (!"tool_result".equals(block.path("type").asText())) continue;
+            String id = block.path("tool_use_id").asText();
+            final String name;
+            synchronized (pendingToolNames) {
+                name = pendingToolNames.getOrDefault(id, "tool");
+            }
+            final String text = extractToolResultText(block.path("content"));
+            final boolean isError = block.path("is_error").asBoolean(false);
+            final Tools.Result r = new Tools.Result(text, isError);
+            Platform.runLater(() -> l.onToolResult(name, r));
         }
-        return out;
     }
 
-    private Map<String, Object> parseInput(JsonValue json) {
+    private void handleResult(JsonNode event, Listener l) {
+        boolean isError = event.path("is_error").asBoolean(false);
+        String subtype = event.path("subtype").asText("");
+        if (isError || (!subtype.isEmpty() && !"success".equals(subtype))) {
+            String msg = event.path("error").path("message").asText("");
+            if (msg.isEmpty()) msg = event.path("result").asText("agent error: " + subtype);
+            final String fmsg = msg;
+            Platform.runLater(() -> l.onError(new RuntimeException(fmsg)));
+        } else {
+            Platform.runLater(l::onTurnComplete);
+        }
+    }
+
+    private String extractToolResultText(JsonNode content) {
+        if (content.isMissingNode()) return "";
+        if (content.isTextual()) return content.asText();
+        if (content.isArray()) {
+            StringBuilder b = new StringBuilder();
+            for (JsonNode rb : content) {
+                if ("text".equals(rb.path("type").asText())) {
+                    if (b.length() > 0) b.append("\n");
+                    b.append(rb.path("text").asText());
+                }
+            }
+            return b.toString();
+        }
+        return content.toString();
+    }
+
+    private Map<String, Object> parseInput(JsonNode input) {
+        if (input.isMissingNode() || input.isNull()) return Map.of();
         try {
-            // JsonValue serializes to JSON via toString() on this SDK. If
-            // a future SDK version changes that, switch to writeValueAsString.
-            String s = json.toString();
-            return mapper.readValue(s, new TypeReference<Map<String, Object>>() {});
+            return mapper.convertValue(input, new TypeReference<Map<String, Object>>() {});
         } catch (Exception e) {
-            LOG.warn("could not parse tool input: {}", json, e);
+            LOG.warn("could not parse tool input: {}", input, e);
             return Map.of();
         }
     }
 
-    public void shutdown() {
-        exec.shutdownNow();
+    private static ExecutorService daemon(String name) {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, name);
+            t.setDaemon(true);
+            return t;
+        });
     }
 }

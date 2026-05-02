@@ -66,18 +66,20 @@ public final class AgentApp extends Application {
         Path cwd = Paths.get(System.getProperty("user.home")).toAbsolutePath();
         String startModel = System.getenv().getOrDefault("CLAUDE_MODEL", DEFAULT_MODEL);
 
-        // Fail fast and visibly if the API key is missing — otherwise the
-        // SDK throws on first request and the user sees a stack trace
-        // dialog with no obvious remediation.
-        if (System.getenv("ANTHROPIC_API_KEY") == null
-                || System.getenv("ANTHROPIC_API_KEY").isBlank()) {
-            stage.setScene(missingKeyScene());
+        // The agent backend is the Claude Code CLI run as a subprocess —
+        // see AgentService Javadoc. Its constructor probes for the binary
+        // and throws IOException if it can't find one. Fail fast with a
+        // visible scene that tells the user how to install Claude Code,
+        // rather than letting the first user message blow up.
+        try {
+            agent = new AgentService(cwd, startModel);
+        } catch (java.io.IOException e) {
+            LOG.error("could not start Claude Code subprocess", e);
+            stage.setScene(missingClaudeScene(e.getMessage()));
             stage.setTitle("Claude for High Sierra");
             stage.show();
             return;
         }
-
-        agent = new AgentService(cwd, startModel);
 
         chat = new ChatPane();
         VBox.setVgrow(chat, Priority.ALWAYS);
@@ -228,26 +230,29 @@ public final class AgentApp extends Application {
         else statusLabel.getStyleClass().remove("status-busy");
     }
 
-    private Scene missingKeyScene() {
+    private Scene missingClaudeScene(String detail) {
         VBox box = new VBox(12);
         box.setAlignment(Pos.CENTER);
         box.setPadding(new Insets(40));
         box.getStyleClass().add("root");
 
-        Label title = new Label("ANTHROPIC_API_KEY not set");
+        Label title = new Label("Claude Code CLI not found");
         title.getStyleClass().add("app-title");
 
         Label body = new Label(
-                "Set your Anthropic API key before launching:\n\n"
-                        + "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-                        + "  open \"Claude for High Sierra.app\"\n\n"
-                        + "Or run the app from a terminal that already has the key in its environment.\n\n"
-                        + "Get a key at https://console.anthropic.com/settings/keys");
+                "This app drives the Claude Code CLI as a subprocess so it can\n"
+                        + "use your Claude.ai Pro or Max subscription instead of API credits.\n\n"
+                        + "Install Claude Code, then log in:\n\n"
+                        + "  npm install -g @anthropic-ai/claude-code\n"
+                        + "  claude /login\n\n"
+                        + "If Claude Code is installed at a non-standard path, set CLAUDE_PATH\n"
+                        + "to its full location before launching the app.\n\n"
+                        + (detail == null ? "" : "Details:\n" + detail));
         body.setWrapText(true);
         body.getStyleClass().add("missing-key-body");
 
         box.getChildren().addAll(title, body);
-        Scene s = new Scene(box, 560, 360);
+        Scene s = new Scene(box, 600, 420);
         s.getStylesheets().add(
                 getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
         return s;

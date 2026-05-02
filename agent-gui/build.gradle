@@ -31,17 +31,19 @@ javafx {
 }
 
 dependencies {
-    // Anthropic Java SDK — talks directly to api.anthropic.com over HTTPS.
-    // No Node.js dep; no Claude-Code-CLI dep. Works on macOS 10.13.6.
-    implementation 'com.anthropic:anthropic-java:2.17.0'
+    // The agent backend is the Claude Code CLI driven as a subprocess
+    // (see io.fathereye.agent.agent.AgentService). The Anthropic Java
+    // SDK is no longer a dependency — we don't talk to api.anthropic.com
+    // ourselves, so we don't ship okhttp, the Anthropic SDK, or its
+    // transitive set. Auth is whatever Claude Code is logged in with
+    // (typically a Pro/Max subscription via `claude /login`).
 
     // Markdown parsing. The renderer walks the AST and emits JavaFX
     // TextFlow nodes — we never produce HTML, so no WebView needed.
     implementation 'org.commonmark:commonmark:0.21.0'
 
-    // Used to (a) parse tool_use input JSON into Map<String,Object> and
-    // (b) JSON-encode args. The Anthropic SDK already pulls Jackson, so
-    // declaring it here pins the version explicitly.
+    // Used to (a) parse the JSONL events claude emits on stdout and
+    // (b) JSON-encode the user messages we write to claude's stdin.
     implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
 
     implementation "org.slf4j:slf4j-api:${slf4jVersion}"
