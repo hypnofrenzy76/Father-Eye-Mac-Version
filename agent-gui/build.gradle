@@ -58,8 +58,8 @@ test {
 // =========================================================================
 // Mac fork build pipeline (mirrors panel/build.gradle).
 //
-//   :agent-gui:jpackageMacApp -> dist/Father Eye Agent.app
-//   :agent-gui:jpackageMacDmg -> dist/Father Eye Agent.dmg
+//   :agent-gui:jpackageMacApp -> dist/Claude for High Sierra.app
+//   :agent-gui:jpackageMacDmg -> dist/Claude for High Sierra.dmg
 //
 // Same prism.* tuning as panel/ for the AMD HD 6750M (TeraScale 2,
 // non-Metal). 10.13.0 LSMinimumSystemVersion patched into Info.plist
@@ -90,7 +90,7 @@ def feAgentJavaOptions = [
 
 def feAgentMacBundleId = 'com.fathereye.agent.mac'
 def feAgentMacMinOS = '10.13.0'
-def feAgentAppName = 'Father Eye Agent'
+def feAgentAppName = 'Claude for High Sierra'
 
 tasks.register('jpackageMacApp') {
     group = 'distribution'
@@ -149,6 +149,55 @@ tasks.register('jpackageMacApp') {
             println "Set LSMinimumSystemVersion=${feAgentMacMinOS} in ${plist}"
         }
         println "jpackage output -> ${outDir}/${feAgentAppName}.app"
+    }
+}
+
+// =========================================================================
+// Linux jpackage target — for cross-platform smoke tests of the Mac app on
+// a Linux dev host. The same JVM properties get baked in via --java-options
+// for behavioral parity with the Mac bundle (the AMD-HD-6750M-specific
+// prism options are no-ops on Linux but harmless to pass).
+//
+// Output:
+//   :agent-gui:jpackageLinuxApp -> dist/Claude for High Sierra/
+// =========================================================================
+
+tasks.register('jpackageLinuxApp') {
+    group = 'distribution'
+    description = "Build a Linux app-image via jpackage (run on Linux only). Mirrors jpackageMacApp for cross-platform smoke tests."
+    dependsOn 'installDist'
+    doLast {
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (!os.contains('linux')) {
+            throw new GradleException("jpackageLinuxApp must run on Linux (current host: ${os}).")
+        }
+        def libDir = layout.buildDirectory.dir('install/agent-gui/lib').get().asFile
+        def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
+        outDir.mkdirs()
+        def existing = new File(outDir, feAgentAppName)
+        if (existing.exists()) existing.deleteDir()
+        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
+        def mainJar = libDir.listFiles().find {
+            it.name.startsWith('fathereye-agent-gui-') && it.name.endsWith('.jar')
+        }
+        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+
+        def cmd = [
+                jpkg,
+                '--type', 'app-image',
+                '--name', feAgentAppName,
+                '--app-version', projectVersionToMacBundleVersion(project.version.toString()),
+                '--input', libDir.absolutePath,
+                '--main-jar', mainJar.name,
+                '--main-class', 'io.fathereye.agent.Launcher',
+                '--module-path', libDir.absolutePath,
+                '--add-modules', "${feAgentJdkModules},${feAgentFxModules}",
+                '--dest', outDir.absolutePath,
+                '--vendor', 'Father Eye'
+        ]
+        feAgentJavaOptions.each { cmd << '--java-options' << it }
+        exec { commandLine cmd }
+        println "jpackage Linux output -> ${outDir}/${feAgentAppName}/"
     }
 }
 

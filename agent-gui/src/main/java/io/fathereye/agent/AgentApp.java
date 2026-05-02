@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * JavaFX Application for the Father Eye Agent. Self-contained — no
+ * JavaFX Application for the Claude for High Sierra. Self-contained — no
  * WebView, no embedded browser. Uses {@link MessageBlock} +
  * {@link io.fathereye.agent.markdown.MarkdownRenderer} to render
  * conversation turns as native FX nodes.
@@ -70,7 +70,7 @@ public final class AgentApp extends Application {
         if (System.getenv("ANTHROPIC_API_KEY") == null
                 || System.getenv("ANTHROPIC_API_KEY").isBlank()) {
             stage.setScene(missingKeyScene());
-            stage.setTitle("Father Eye Agent");
+            stage.setTitle("Claude for High Sierra");
             stage.show();
             return;
         }
@@ -91,7 +91,7 @@ public final class AgentApp extends Application {
                 getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
 
         stage.setScene(scene);
-        stage.setTitle("Father Eye Agent");
+        stage.setTitle("Claude for High Sierra");
         stage.setMinWidth(560);
         stage.setMinHeight(420);
         stage.setOnCloseRequest(e -> {
@@ -103,7 +103,7 @@ public final class AgentApp extends Application {
     }
 
     private HBox buildTopBar(Path cwd) {
-        Label title = new Label("Father Eye Agent");
+        Label title = new Label("Claude for High Sierra");
         title.getStyleClass().add("app-title");
 
         Label cwdLabel = new Label(cwd.toString());
@@ -238,7 +238,7 @@ public final class AgentApp extends Application {
         Label body = new Label(
                 "Set your Anthropic API key before launching:\n\n"
                         + "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-                        + "  open \"Father Eye Agent.app\"\n\n"
+                        + "  open \"Claude for High Sierra.app\"\n\n"
                         + "Or run the app from a terminal that already has the key in its environment.\n\n"
                         + "Get a key at https://console.anthropic.com/settings/keys");
         body.setWrapText(true);
