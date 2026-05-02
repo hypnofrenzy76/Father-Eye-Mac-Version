@@ -42,10 +42,12 @@ public final class AgentApp extends Application {
 
     private static final Logger LOG = LoggerFactory.getLogger(AgentApp.class);
     private static final String DEFAULT_MODEL = "claude-opus-4-7";
+    // Opus-only. Both entries are agentic-capable: Opus 4.7 is the default
+    // (adaptive thinking, latest tool use), Opus 4.6 is kept as a fallback
+    // for cost-sensitive sessions or if 4.7 is unreachable.
     private static final List<String> MODELS = List.of(
             "claude-opus-4-7",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5"
+            "claude-opus-4-6"
     );
 
     private AgentService agent;
