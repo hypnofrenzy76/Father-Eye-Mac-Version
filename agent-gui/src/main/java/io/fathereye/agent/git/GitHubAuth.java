@@ -105,6 +105,44 @@ public final class GitHubAuth {
         return r.exit == 0;
     }
 
+    /** True if Homebrew is on the user's PATH. Used by the Settings UI to
+     *  pick between {@code brew install gh} and opening cli.github.com. */
+    public boolean brewAvailable() {
+        Result r = run(3, "/bin/zsh", "-lic", "command -v brew");
+        return r.exit == 0 && !r.output.isBlank();
+    }
+
+    /** Run {@code brew install gh}. Streams output to a consumer for live
+     *  progress display. Returns true on success. */
+    public boolean brewInstallGh(java.util.function.Consumer<String> lineSink)
+            throws IOException, InterruptedException {
+        // -lic so brew's PATH overrides land. Avoids "brew: command not found"
+        // from a Finder-launched .app's minimal launchd PATH.
+        ProcessBuilder pb = new ProcessBuilder("/bin/zsh", "-lic", "brew install gh");
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (lineSink != null) lineSink.accept(line);
+                LOG.info("[brew install gh] {}", line);
+            }
+        }
+        boolean done = p.waitFor(600, TimeUnit.SECONDS);
+        if (!done) { p.destroyForcibly(); return false; }
+        return p.exitValue() == 0;
+    }
+
+    /** Open a URL in the default browser via macOS's {@code open} command. */
+    public static void openInBrowser(String url) {
+        try {
+            new ProcessBuilder("open", url).start();
+        } catch (IOException e) {
+            LOG.warn("could not open {}: {}", url, e.toString());
+        }
+    }
+
     // -------------------------------------------------------------------
 
     private record Result(int exit, String output) {}

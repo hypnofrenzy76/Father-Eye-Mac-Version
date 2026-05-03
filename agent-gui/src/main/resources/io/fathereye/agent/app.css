@@ -519,6 +519,17 @@
     -fx-text-alignment: center;
     -fx-padding: 12 0 0 0;
 }
+.github-code {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 28px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #1F1F1E;
+    -fx-background-color: #FAF8F2;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+    -fx-padding: 14 28 14 28;
+}
 
 /* ------------------------------ settings -------------------------------- */
 

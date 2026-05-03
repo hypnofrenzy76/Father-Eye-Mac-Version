@@ -95,9 +95,14 @@ public final class SettingsDialog {
         Button ghSignOutBtn = new Button("Sign out of GitHub");
         ghSignOutBtn.getStyleClass().add("ghost-button-danger");
         Label ghHint = new Label(
-                "Required to push and pull from private repos. Sign-in opens your "
-                + "browser through the GitHub CLI (gh) and stores the token in your "
-                + "Mac's Keychain — this app never sees it.");
+                "Required to push and pull from private repos over HTTPS. Sign-in "
+                + "shows a one-time code, opens GitHub's authorization page in your "
+                + "browser, and writes the OAuth token into your Mac's Keychain via "
+                + "the GitHub CLI — this app never sees it. After sign-in,\n"
+                + "git clone / pull / push for HTTPS URLs (https://github.com/...) "
+                + "Just Works for both public and private repos. (SSH URLs — "
+                + "git@github.com:owner/repo.git — go through your existing SSH "
+                + "keys instead and don't need this.)");
         ghHint.setWrapText(true);
         ghHint.getStyleClass().add("settings-hint");
 
@@ -117,25 +122,51 @@ public final class SettingsDialog {
                     ghSignOutBtn.setVisible(signedIn);
                     ghSignOutBtn.setManaged(signedIn);
                     if (s.state() == GitHubAuth.State.NO_GH_CLI) {
-                        ghSignInBtn.setText("Install GitHub CLI…");
-                        ghSignInBtn.setOnAction(ev -> ghStatus.setText(
-                                "Install with `brew install gh`, then reopen Settings."));
+                        // Two paths from here: if brew is already installed,
+                        // run `brew install gh` directly with live progress.
+                        // Otherwise open cli.github.com in the user's
+                        // browser so they can grab the .pkg installer.
+                        boolean brew = ghAuth.brewAvailable();
+                        if (brew) {
+                            ghSignInBtn.setText("Install GitHub CLI (brew)");
+                            ghSignInBtn.setOnAction(ev -> {
+                                ghSignInBtn.setDisable(true);
+                                ghStatus.setText("Running `brew install gh`…");
+                                new Thread(() -> {
+                                    boolean ok;
+                                    try { ok = ghAuth.brewInstallGh(line ->
+                                            Platform.runLater(() -> ghStatus.setText(line)));
+                                    } catch (Exception ex) { ok = false; }
+                                    final boolean done = ok;
+                                    Platform.runLater(() -> {
+                                        ghSignInBtn.setDisable(false);
+                                        ghStatus.setText(done
+                                                ? "GitHub CLI installed."
+                                                : "Install failed. See logs (~/Library/Logs/Claude for High Sierra/) or run `brew install gh` in Terminal manually.");
+                                        refreshGhRef[0].run();
+                                    });
+                                }, "brew-install-gh").start();
+                            });
+                        } else {
+                            ghSignInBtn.setText("Open cli.github.com…");
+                            ghSignInBtn.setOnAction(ev -> {
+                                GitHubAuth.openInBrowser("https://cli.github.com/");
+                                ghStatus.setText(
+                                        "Opening https://cli.github.com/ — download the macOS .pkg installer, then reopen Settings.\n"
+                                        + "Or install Homebrew first (https://brew.sh/) and use `brew install gh`.");
+                            });
+                        }
                     } else {
                         ghSignInBtn.setText("Sign in with GitHub");
                         ghSignInBtn.setOnAction(ev -> {
-                            ghSignInBtn.setDisable(true);
-                            ghStatus.setText("Opening browser. Complete sign-in there…");
-                            new Thread(() -> {
-                                boolean ok;
-                                try { ok = ghAuth.runGhLogin(); }
-                                catch (Exception ex) { ok = false; }
-                                final boolean done = ok;
-                                Platform.runLater(() -> {
-                                    ghSignInBtn.setDisable(false);
-                                    if (done) ghStatus.setText("Signed in. Refreshing…");
-                                    refreshGhRef[0].run();
-                                });
-                            }, "gh-login").start();
+                            // Open the modal that captures gh's device-code
+                            // output and shows it in our window. Without
+                            // this, a Finder-launched .app has no terminal
+                            // for gh to print the code into and the user
+                            // sees nothing happen.
+                            boolean ok = GitHubLoginDialog.show(st);
+                            if (ok) ghStatus.setText("Signed in. Refreshing…");
+                            refreshGhRef[0].run();
                         });
                     }
                 });
