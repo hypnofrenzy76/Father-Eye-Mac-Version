@@ -61,6 +61,8 @@ public final class AgentService {
     private volatile String currentSessionId;
     /** If non-null, the next spawn passes {@code --resume <id>} to continue an old session. */
     private volatile String pendingResumeId;
+    /** Per-process usage counters, ingested from result events. */
+    private final io.fathereye.agent.usage.UsageStats usage = new io.fathereye.agent.usage.UsageStats();
     private final String claudePath;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -115,6 +117,7 @@ public final class AgentService {
     public String getCurrentSessionId() { return currentSessionId; }
     public String getModel() { return model; }
     public Path cwd() { return cwd; }
+    public io.fathereye.agent.usage.UsageStats usageStats() { return usage; }
 
     public synchronized void clearHistory() {
         respawn();
@@ -396,6 +399,7 @@ public final class AgentService {
     }
 
     private void handleResult(JsonNode event, Listener l) {
+        usage.ingestResult(event);
         boolean isError = event.path("is_error").asBoolean(false);
         String subtype = event.path("subtype").asText("");
         if (isError || (!subtype.isEmpty() && !"success".equals(subtype))) {

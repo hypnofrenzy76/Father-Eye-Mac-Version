@@ -43,6 +43,7 @@ public final class Sidebar extends VBox {
     private final Runnable onNew;
     private final Runnable onSettings;
     private String selectedId;
+    private final Label usageLabel = new Label("");
 
     public Sidebar(ConversationStore store,
                    Consumer<Conversation> onSelect,
@@ -86,6 +87,10 @@ public final class Sidebar extends VBox {
         settingsBtn.setMaxWidth(Double.MAX_VALUE);
         settingsBtn.setOnAction(e -> onSettings.run());
 
+        usageLabel.getStyleClass().add("sidebar-usage");
+        usageLabel.setMaxWidth(Double.MAX_VALUE);
+        usageLabel.setWrapText(true);
+
         VBox top = new VBox(10, title, newBtn);
         top.setPadding(new Insets(20, 14, 12, 14));
 
@@ -93,7 +98,7 @@ public final class Sidebar extends VBox {
         middle.setPadding(new Insets(0, 14, 8, 14));
         VBox.setVgrow(middle, Priority.ALWAYS);
 
-        VBox bottom = new VBox(settingsBtn);
+        VBox bottom = new VBox(6, usageLabel, settingsBtn);
         bottom.setPadding(new Insets(8, 14, 14, 14));
 
         getChildren().addAll(top, middle, bottom);
@@ -101,6 +106,11 @@ public final class Sidebar extends VBox {
     }
 
     public void refresh() { Platform.runLater(this::doRefresh); }
+
+    /** Update the usage line at the bottom of the sidebar. Safe to call from any thread. */
+    public void setUsageText(String s) {
+        Platform.runLater(() -> usageLabel.setText(s == null ? "" : s));
+    }
 
     private void doRefresh() {
         listBox.getChildren().clear();

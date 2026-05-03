@@ -462,6 +462,22 @@
     -fx-background-radius: 8;
 }
 .sidebar-settings:hover { -fx-background-color: rgba(0,0,0,0.04); -fx-text-fill: #1F1F1E; }
+.sidebar-usage {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 10.5px;
+    -fx-text-fill: #8E8B83;
+    -fx-padding: 0 4 0 4;
+}
+.settings-hint {
+    -fx-font-size: 11.5px;
+    -fx-text-fill: #6E6E6D;
+    -fx-line-spacing: 3;
+}
+.settings-usage {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11.5px;
+    -fx-text-fill: #1F1F1E;
+}
 
 /* ------------------------------ workspace bar ---------------------------- */
 

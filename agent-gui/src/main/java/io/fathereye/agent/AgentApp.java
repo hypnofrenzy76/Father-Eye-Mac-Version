@@ -61,7 +61,14 @@ public final class AgentApp extends Application {
 
     private static final Logger LOG = LoggerFactory.getLogger(AgentApp.class);
     private static final String DEFAULT_MODEL = "claude-opus-4-7";
-    private static final List<String> MODELS = List.of("claude-opus-4-7", "claude-opus-4-6");
+    // Full Claude 4 family. Opus 4.7 is the default; Sonnet/Haiku
+    // available for cheaper / faster sessions.
+    private static final List<String> MODELS = List.of(
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5"
+    );
 
     private Auth auth;
     private AgentService agent;
@@ -269,6 +276,7 @@ public final class AgentApp extends Application {
                 input.requestFocus();
                 sidebar.refresh();
                 sidebar.setSelected(current.id());
+                sidebar.setUsageText(agent.usageStats().shortDisplay());
             }
             @Override public void onError(Throwable t) {
                 LOG.error("agent error", t);
@@ -402,6 +410,7 @@ public final class AgentApp extends Application {
     private void openSettings() {
         SettingsDialog.Result r = SettingsDialog.show(
                 stage, agent.getModel(), agent.cwd(), MODELS, auth,
+                agent.usageStats(),
                 model -> agent.setModel(model),
                 cwd -> { switchCwd(cwd); }
         );
