@@ -94,10 +94,58 @@ def feAgentMacBundleId = 'com.fathereye.agent.mac'
 def feAgentMacMinOS = '10.13.0'
 def feAgentAppName = 'Claude for High Sierra'
 
+// =========================================================================
+// App icon (vintage rainbow Apple). Generated programmatically via
+// io.fathereye.agent.icon.IconGenerator at build time -- no binary check
+// in. macOS gets a real .icns built via `iconutil -c icns`; Linux gets a
+// 512x512 .png. Both wired into the corresponding jpackage --icon flag.
+//
+// Trademark: the rainbow Apple logo is owned by Apple Inc. The generator
+// produces a stylized approximation; if you're shipping this widely,
+// replace agent-gui/icons/icon.icns (or icon.png) with your own art.
+// =========================================================================
+
+tasks.register('generateAppIcons') {
+    group = 'distribution'
+    description = 'Generate the iconset / .icns / .png for jpackage --icon (depends on compiled IconGenerator).'
+    dependsOn 'compileJava'
+    def iconWork = layout.buildDirectory.dir('icons').get().asFile
+    def iconsetDir = new File(iconWork, 'icon.iconset')
+    def icnsFile = new File(iconWork, 'icon.icns')
+    def pngFile = new File(iconWork, 'icon.png')
+    inputs.files(sourceSets.main.output)
+    outputs.files(icnsFile, pngFile)
+    doLast {
+        iconWork.mkdirs()
+        // Run IconGenerator with the compiled class output on its
+        // classpath. We don't need any third-party deps -- pure javax.imageio.
+        javaexec {
+            classpath = sourceSets.main.runtimeClasspath
+            mainClass = 'io.fathereye.agent.icon.IconGenerator'
+            args = [iconsetDir.absolutePath, pngFile.absolutePath]
+        }
+        // .icns conversion needs macOS's iconutil. On Linux we skip --
+        // jpackage --icon there takes a .png anyway.
+        def os = System.getProperty('os.name', '').toLowerCase()
+        if (os.contains('mac')) {
+            if (icnsFile.exists()) icnsFile.delete()
+            exec {
+                commandLine 'iconutil', '-c', 'icns', iconsetDir.absolutePath, '-o', icnsFile.absolutePath
+            }
+            println "icns -> ${icnsFile}"
+        } else {
+            // Touch a placeholder file so up-to-date checks behave.
+            icnsFile.parentFile.mkdirs()
+            if (!icnsFile.exists()) icnsFile.createNewFile()
+        }
+        println "png  -> ${pngFile}"
+    }
+}
+
 tasks.register('jpackageMacApp') {
     group = 'distribution'
     description = "Build ${feAgentAppName}.app via jpackage (run on macOS only). Targets High Sierra 10.13.6+."
-    dependsOn 'installDist'
+    dependsOn 'installDist', 'generateAppIcons'
     doLast {
         def os = System.getProperty('os.name', '').toLowerCase()
         if (!os.contains('mac')) {
@@ -117,6 +165,7 @@ tasks.register('jpackageMacApp') {
         if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
 
         def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
+        def icnsFile = layout.buildDirectory.file('icons/icon.icns').get().asFile
 
         def cmd = [
                 jpkg,
@@ -133,6 +182,7 @@ tasks.register('jpackageMacApp') {
                 '--mac-package-name', feAgentAppName,
                 '--vendor', 'Father Eye'
         ]
+        if (icnsFile.exists() && icnsFile.length() > 0) cmd += ['--icon', icnsFile.absolutePath]
         feAgentJavaOptions.each { cmd << '--java-options' << it }
         exec { commandLine cmd }
 
@@ -167,7 +217,7 @@ tasks.register('jpackageMacApp') {
 tasks.register('jpackageLinuxApp') {
     group = 'distribution'
     description = "Build a Linux app-image via jpackage (run on Linux only). Mirrors jpackageMacApp for cross-platform smoke tests."
-    dependsOn 'installDist'
+    dependsOn 'installDist', 'generateAppIcons'
     doLast {
         def os = System.getProperty('os.name', '').toLowerCase()
         if (!os.contains('linux')) {
@@ -183,6 +233,7 @@ tasks.register('jpackageLinuxApp') {
             it.name.startsWith('fathereye-agent-gui-') && it.name.endsWith('.jar')
         }
         if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+        def pngFile = layout.buildDirectory.file('icons/icon.png').get().asFile
 
         def cmd = [
                 jpkg,
@@ -197,6 +248,7 @@ tasks.register('jpackageLinuxApp') {
                 '--dest', outDir.absolutePath,
                 '--vendor', 'Father Eye'
         ]
+        if (pngFile.exists() && pngFile.length() > 0) cmd += ['--icon', pngFile.absolutePath]
         feAgentJavaOptions.each { cmd << '--java-options' << it }
         exec { commandLine cmd }
         println "jpackage Linux output -> ${outDir}/${feAgentAppName}/"

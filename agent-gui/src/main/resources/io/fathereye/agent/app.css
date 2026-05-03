@@ -341,3 +341,173 @@
     -fx-font-size: 12.5px;
     -fx-line-spacing: 4;
 }
+
+/* ------------------------------- sidebar -------------------------------- */
+
+.sidebar {
+    -fx-background-color: #ECE7DC;
+    -fx-border-color: transparent #E0DCD2 transparent transparent;
+    -fx-border-width: 0 1 0 0;
+}
+.sidebar-title {
+    -fx-font-family: "Charter", "Georgia", "Times New Roman", serif;
+    -fx-font-size: 14px;
+    -fx-font-style: italic;
+    -fx-text-fill: #1F1F1E;
+}
+.sidebar-new {
+    -fx-background-color: #FAF8F2;
+    -fx-text-fill: #1F1F1E;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+    -fx-padding: 8 12 8 12;
+    -fx-font-size: 13px;
+    -fx-cursor: hand;
+    -fx-alignment: center-left;
+}
+.sidebar-new:hover {
+    -fx-background-color: #FFFFFF;
+    -fx-border-color: #D97757;
+    -fx-text-fill: #D97757;
+}
+.sidebar-section-header {
+    -fx-font-size: 10.5px;
+    -fx-text-fill: #8E8B83;
+    -fx-padding: 4 4 2 4;
+    -fx-font-weight: bold;
+}
+.sidebar-group-header {
+    -fx-font-size: 10.5px;
+    -fx-text-fill: #8E8B83;
+    -fx-padding: 8 4 2 4;
+    -fx-font-weight: bold;
+}
+.sidebar-list { -fx-spacing: 1; }
+.sidebar-scroll, .sidebar-scroll > .viewport {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+}
+.sidebar-scroll > .scroll-bar:vertical {
+    -fx-pref-width: 8;
+    -fx-background-color: transparent;
+}
+.sidebar-row {
+    -fx-background-color: transparent;
+    -fx-background-radius: 8;
+    -fx-cursor: hand;
+}
+.sidebar-row:hover { -fx-background-color: rgba(0,0,0,0.04); }
+.sidebar-row-selected { -fx-background-color: rgba(217,119,87,0.14); }
+.sidebar-row-title {
+    -fx-text-fill: #1F1F1E;
+    -fx-font-size: 12.5px;
+}
+.sidebar-row-delete {
+    -fx-background-color: transparent;
+    -fx-text-fill: #8E8B83;
+    -fx-padding: 0 6 0 6;
+    -fx-font-size: 14px;
+    -fx-cursor: hand;
+}
+.sidebar-row-delete:hover { -fx-text-fill: #C0463E; }
+.sidebar-empty {
+    -fx-text-fill: #8E8B83;
+    -fx-font-size: 12px;
+    -fx-padding: 8;
+}
+.sidebar-settings {
+    -fx-background-color: transparent;
+    -fx-text-fill: #6E6E6D;
+    -fx-padding: 8 12 8 12;
+    -fx-font-size: 12.5px;
+    -fx-cursor: hand;
+    -fx-alignment: center-left;
+    -fx-background-radius: 8;
+}
+.sidebar-settings:hover { -fx-background-color: rgba(0,0,0,0.04); -fx-text-fill: #1F1F1E; }
+
+/* ------------------------------ workspace bar ---------------------------- */
+
+.workspace-bar {
+    -fx-background-color: #F4F1EA;
+    -fx-border-color: transparent transparent #E0DCD2 transparent;
+    -fx-border-width: 0 0 1 0;
+}
+.branch-label {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-text-fill: #6E6E6D;
+    -fx-padding: 0 8 0 4;
+}
+.model-label {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-text-fill: #6E6E6D;
+    -fx-padding: 0 8 0 0;
+}
+
+/* ------------------------------- welcome -------------------------------- */
+
+.welcome-title {
+    -fx-font-family: "Charter", "Georgia", "Times New Roman", serif;
+    -fx-font-size: 22px;
+    -fx-font-style: italic;
+    -fx-text-fill: #1F1F1E;
+}
+.welcome-subtitle {
+    -fx-font-size: 13.5px;
+    -fx-text-fill: #6E6E6D;
+    -fx-line-spacing: 4;
+    -fx-text-alignment: center;
+}
+.welcome-status {
+    -fx-font-size: 12px;
+    -fx-text-fill: #6E6E6D;
+    -fx-text-alignment: center;
+    -fx-padding: 12 0 0 0;
+}
+
+/* ------------------------------ settings -------------------------------- */
+
+.settings-section {
+    -fx-spacing: 8;
+    -fx-padding: 8 0 8 0;
+    -fx-border-color: transparent transparent #E0DCD2 transparent;
+    -fx-border-width: 0 0 1 0;
+}
+.settings-section:last-child { -fx-border-width: 0; }
+.settings-section-header {
+    -fx-font-family: "Charter", "Georgia", "Times New Roman", serif;
+    -fx-font-size: 14px;
+    -fx-font-style: italic;
+    -fx-text-fill: #1F1F1E;
+}
+.settings-label {
+    -fx-font-size: 12.5px;
+    -fx-text-fill: #1F1F1E;
+}
+.settings-cwd {
+    -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    -fx-font-size: 11.5px;
+    -fx-text-fill: #6E6E6D;
+}
+.settings-about {
+    -fx-font-size: 12px;
+    -fx-text-fill: #6E6E6D;
+    -fx-line-spacing: 4;
+}
+.settings-scroll, .settings-scroll > .viewport {
+    -fx-background-color: #F4F1EA;
+}
+.ghost-button-danger {
+    -fx-background-color: transparent;
+    -fx-text-fill: #C0463E;
+    -fx-border-color: #C0463E;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 4 12 4 12;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+.ghost-button-danger:hover { -fx-background-color: rgba(192,70,62,0.08); }

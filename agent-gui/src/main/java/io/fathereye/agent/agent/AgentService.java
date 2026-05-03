@@ -54,7 +54,8 @@ public final class AgentService {
         void onError(Throwable t);
     }
 
-    private final Path cwd;
+    private final Path defaultCwd;
+    private volatile Path cwd;
     private volatile String model;
     private final String claudePath;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -72,6 +73,7 @@ public final class AgentService {
     private volatile Listener currentListener;
 
     public AgentService(Path cwd, String model) throws IOException {
+        this.defaultCwd = cwd;
         this.cwd = cwd;
         this.model = model;
         this.claudePath = findClaude();
@@ -86,6 +88,11 @@ public final class AgentService {
         // expose a model-switch verb mid-session, so a clean restart is
         // the cleanest semantics. The user already had to click the model
         // picker explicitly to land here.
+        respawn();
+    }
+    public synchronized void setCwd(Path cwd) {
+        if (cwd == null || cwd.equals(this.cwd)) return;
+        this.cwd = cwd;
         respawn();
     }
     public String getModel() { return model; }

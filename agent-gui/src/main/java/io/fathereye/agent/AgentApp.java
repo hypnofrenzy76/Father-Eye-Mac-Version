@@ -2,8 +2,16 @@ package io.fathereye.agent;
 
 import io.fathereye.agent.agent.AgentService;
 import io.fathereye.agent.agent.Tools;
+import io.fathereye.agent.auth.Auth;
+import io.fathereye.agent.git.GitOps;
+import io.fathereye.agent.session.Conversation;
+import io.fathereye.agent.session.ConversationStore;
 import io.fathereye.agent.ui.ChatPane;
+import io.fathereye.agent.ui.CloneDialog;
 import io.fathereye.agent.ui.MessageBlock;
+import io.fathereye.agent.ui.SettingsDialog;
+import io.fathereye.agent.ui.Sidebar;
+import io.fathereye.agent.ui.SignInScene;
 import io.fathereye.agent.ui.ToolCallCard;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -11,7 +19,6 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
-import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextArea;
 import javafx.scene.input.KeyCode;
@@ -21,6 +28,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,102 +41,136 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * JavaFX Application for the Claude for High Sierra. Self-contained — no
- * WebView, no embedded browser. Uses {@link MessageBlock} +
- * {@link io.fathereye.agent.markdown.MarkdownRenderer} to render
- * conversation turns as native FX nodes.
+ * Main JavaFX Application.
+ *
+ * <p>Top-level scene graph:
+ *
+ * <pre>
+ *   Stage
+ *     SignInScene (if !auth.isLoggedIn)  -- transitions to mainScene on success
+ *     mainScene
+ *       BorderPane
+ *         left:   Sidebar (conversation list, +New, ⚙Settings)
+ *         center: BorderPane
+ *           top:    workspaceBar (cwd + branch + Clone/Pull/Push, model, status)
+ *           center: ChatPane (scrollable message column)
+ *           bottom: input bar (TextArea + Send)
+ * </pre>
  */
 public final class AgentApp extends Application {
 
     private static final Logger LOG = LoggerFactory.getLogger(AgentApp.class);
     private static final String DEFAULT_MODEL = "claude-opus-4-7";
-    // Opus-only. Both entries are agentic-capable: Opus 4.7 is the default
-    // (adaptive thinking, latest tool use), Opus 4.6 is kept as a fallback
-    // for cost-sensitive sessions or if 4.7 is unreachable.
-    private static final List<String> MODELS = List.of(
-            "claude-opus-4-7",
-            "claude-opus-4-6"
-    );
+    private static final List<String> MODELS = List.of("claude-opus-4-7", "claude-opus-4-6");
 
+    private Auth auth;
     private AgentService agent;
+    private ConversationStore store;
+    private Conversation current;
+
+    private Stage stage;
+    private Sidebar sidebar;
     private ChatPane chat;
     private TextArea input;
     private Button sendButton;
     private Label statusLabel;
+    private Label cwdLabel;
+    private Label branchLabel;
+    private Button pullBtn;
+    private Button pushBtn;
 
-    /** Most-recent assistant block; new text + tool cards land here. */
     private MessageBlock currentAssistant;
-    /** Tool cards awaiting their result, in dispatch order. */
     private final Deque<ToolCallCard> pendingTools = new ArrayDeque<>();
 
     @Override
     public void start(Stage stage) {
-        Path cwd = Paths.get(System.getProperty("user.home")).toAbsolutePath();
-        String startModel = System.getenv().getOrDefault("CLAUDE_MODEL", DEFAULT_MODEL);
+        this.stage = stage;
+        stage.setTitle("Claude for High Sierra");
+        stage.setMinWidth(820);
+        stage.setMinHeight(580);
+        stage.setOnCloseRequest(e -> { if (agent != null) agent.shutdown(); });
 
-        // The agent backend is the Claude Code CLI run as a subprocess —
-        // see AgentService Javadoc. Its constructor probes for the binary
-        // and throws IOException if it can't find one. Fail fast with a
-        // visible scene that tells the user how to install Claude Code,
-        // rather than letting the first user message blow up.
-        try {
-            agent = new AgentService(cwd, startModel);
-        } catch (java.io.IOException e) {
-            LOG.error("could not start Claude Code subprocess", e);
+        String claudePath;
+        try { claudePath = Auth.findClaude(); }
+        catch (java.io.IOException e) {
+            LOG.error("Claude Code CLI not found", e);
             stage.setScene(missingClaudeScene(e.getMessage()));
-            stage.setTitle("Claude for High Sierra");
             stage.show();
             return;
         }
+        this.auth = new Auth(claudePath);
+        this.store = new ConversationStore();
+
+        if (!auth.isLoggedIn()) {
+            stage.setScene(SignInScene.build(auth, this::buildMainScene));
+            stage.show();
+            return;
+        }
+        buildMainScene();
+        stage.show();
+    }
+
+    // ----------------------------------------------------------------- main scene
+
+    private void buildMainScene() {
+        Path cwd = Paths.get(System.getProperty("user.home")).toAbsolutePath();
+        String startModel = System.getenv().getOrDefault("CLAUDE_MODEL", DEFAULT_MODEL);
+        try { agent = new AgentService(cwd, startModel); }
+        catch (java.io.IOException e) {
+            LOG.error("could not start Claude Code subprocess", e);
+            stage.setScene(missingClaudeScene(e.getMessage()));
+            return;
+        }
+        current = store.create(cwd, startModel);
 
         chat = new ChatPane();
         VBox.setVgrow(chat, Priority.ALWAYS);
 
+        sidebar = new Sidebar(store, this::loadConversation, this::newConversation, this::openSettings);
+        sidebar.setSelected(current.id());
+
+        BorderPane center = new BorderPane();
+        center.setTop(buildWorkspaceBar(cwd));
+        center.setCenter(chat);
+        center.setBottom(buildInputBar());
+
         BorderPane root = new BorderPane();
         root.getStyleClass().add("root");
-        root.setTop(buildTopBar(cwd));
-        root.setCenter(chat);
-        root.setBottom(buildInputBar());
+        root.setLeft(sidebar);
+        root.setCenter(center);
 
-        Scene scene = new Scene(root, 880, 720);
-        scene.getStylesheets().add(
-                getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
-
+        Scene scene = new Scene(root, 1100, 760);
+        scene.getStylesheets().add(getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
         stage.setScene(scene);
-        stage.setTitle("Claude for High Sierra");
-        stage.setMinWidth(560);
-        stage.setMinHeight(420);
-        stage.setOnCloseRequest(e -> {
-            if (agent != null) agent.shutdown();
-        });
-        stage.show();
-
         Platform.runLater(() -> input.requestFocus());
     }
 
-    private HBox buildTopBar(Path cwd) {
-        Label title = new Label("Claude for High Sierra");
-        title.getStyleClass().add("app-title");
-
-        Label cwdLabel = new Label(cwd.toString());
+    private HBox buildWorkspaceBar(Path cwd) {
+        cwdLabel = new Label(cwd.toString());
         cwdLabel.getStyleClass().add("cwd-label");
+        cwdLabel.setOnMouseClicked(e -> pickDirectory());
 
-        ChoiceBox<String> modelPicker = new ChoiceBox<>();
-        modelPicker.getItems().addAll(MODELS);
-        modelPicker.setValue(agent.getModel());
-        modelPicker.getStyleClass().add("model-picker");
-        modelPicker.valueProperty().addListener((obs, oldV, newV) -> {
-            if (newV != null) agent.setModel(newV);
+        Button pickBtn = new Button("📁 Pick Folder");
+        pickBtn.getStyleClass().add("ghost-button");
+        pickBtn.setOnAction(e -> pickDirectory());
+
+        Button cloneBtn = new Button("⤓ Clone Repo");
+        cloneBtn.getStyleClass().add("ghost-button");
+        cloneBtn.setOnAction(e -> {
+            Path cloned = CloneDialog.show(stage);
+            if (cloned != null) switchCwd(cloned);
         });
 
-        Button clearBtn = new Button("Clear");
-        clearBtn.getStyleClass().add("ghost-button");
-        clearBtn.setOnAction(e -> {
-            chat.clear();
-            agent.clearHistory();
-            currentAssistant = null;
-            pendingTools.clear();
-        });
+        branchLabel = new Label("");
+        branchLabel.getStyleClass().add("branch-label");
+
+        pullBtn = new Button("Pull");
+        pullBtn.getStyleClass().add("ghost-button");
+        pullBtn.setOnAction(e -> runGit(() -> GitOps.pull(agent.cwd()), "Pull"));
+
+        pushBtn = new Button("Push");
+        pushBtn.getStyleClass().add("ghost-button");
+        pushBtn.setOnAction(e -> runGit(() -> GitOps.push(agent.cwd()), "Push"));
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -136,16 +178,21 @@ public final class AgentApp extends Application {
         statusLabel = new Label("ready");
         statusLabel.getStyleClass().add("status-label");
 
-        HBox bar = new HBox(12, title, cwdLabel, spacer, statusLabel, modelPicker, clearBtn);
-        bar.getStyleClass().add("top-bar");
+        Label modelLabel = new Label(agent.getModel());
+        modelLabel.getStyleClass().add("model-label");
+
+        HBox bar = new HBox(10, pickBtn, cwdLabel, cloneBtn, branchLabel, pullBtn, pushBtn,
+                spacer, statusLabel, modelLabel);
+        bar.getStyleClass().add("workspace-bar");
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(14, 20, 14, 20));
+        bar.setPadding(new Insets(12, 18, 12, 18));
+        refreshGitState();
         return bar;
     }
 
     private HBox buildInputBar() {
         input = new TextArea();
-        input.setPromptText("Message Claude…  (Enter to send, Shift+Enter for newline)");
+        input.setPromptText("Reply to Claude…  (Enter to send, Shift+Enter for newline)");
         input.getStyleClass().add("input-area");
         input.setWrapText(true);
         input.setPrefRowCount(2);
@@ -155,7 +202,7 @@ public final class AgentApp extends Application {
         sendButton = new Button("Send");
         sendButton.getStyleClass().add("send-button");
         sendButton.setOnAction(e -> submit());
-        sendButton.setDefaultButton(false); // we handle Enter ourselves
+        sendButton.setDefaultButton(false);
 
         HBox bar = new HBox(10, input, sendButton);
         bar.getStyleClass().add("input-bar");
@@ -163,6 +210,8 @@ public final class AgentApp extends Application {
         bar.setPadding(new Insets(12, 20, 18, 20));
         return bar;
     }
+
+    // ----------------------------------------------------------------- actions
 
     private void onInputKey(KeyEvent e) {
         if (e.getCode() == KeyCode.ENTER && !e.isShiftDown() && !e.isControlDown() && !e.isMetaDown()) {
@@ -181,18 +230,25 @@ public final class AgentApp extends Application {
         MessageBlock userBlock = new MessageBlock(MessageBlock.Role.USER);
         userBlock.appendMarkdown(text);
         chat.addMessage(userBlock);
+        current.addUser(text);
+        store.save(current);
+        sidebar.refresh();
+        sidebar.setSelected(current.id());
 
         currentAssistant = null;
         pendingTools.clear();
 
-        agent.send(text, new AgentService.Listener() {
-            @Override public void onAssistantText(String markdown) {
+        final String sent = text;
+        agent.send(sent, new AgentService.Listener() {
+            @Override public void onAssistantText(String md) {
                 ensureAssistant();
-                currentAssistant.appendMarkdown(markdown);
+                currentAssistant.appendMarkdown(md);
+                current.addAssistant(md);
+                store.save(current);
             }
-            @Override public void onToolCall(String name, Map<String, Object> input) {
+            @Override public void onToolCall(String name, Map<String, Object> in) {
                 ensureAssistant();
-                ToolCallCard card = new ToolCallCard(name, input);
+                ToolCallCard card = new ToolCallCard(name, in);
                 currentAssistant.appendToolCall(card);
                 pendingTools.add(card);
             }
@@ -203,12 +259,16 @@ public final class AgentApp extends Application {
             @Override public void onTurnComplete() {
                 setBusy(false);
                 input.requestFocus();
+                sidebar.refresh();
+                sidebar.setSelected(current.id());
             }
             @Override public void onError(Throwable t) {
                 LOG.error("agent error", t);
                 MessageBlock errBlock = new MessageBlock(MessageBlock.Role.ERROR);
                 errBlock.appendPlain(t.getClass().getSimpleName() + ": " + t.getMessage());
                 chat.addMessage(errBlock);
+                current.addError(t.getMessage());
+                store.save(current);
                 setBusy(false);
                 input.requestFocus();
             }
@@ -230,6 +290,110 @@ public final class AgentApp extends Application {
         else statusLabel.getStyleClass().remove("status-busy");
     }
 
+    private void newConversation() {
+        agent.clearHistory();
+        chat.clear();
+        currentAssistant = null;
+        pendingTools.clear();
+        current = store.create(agent.cwd(), agent.getModel());
+        sidebar.refresh();
+        sidebar.setSelected(current.id());
+    }
+
+    private void loadConversation(Conversation c) {
+        // Persisted conversations are visual review only. Loading does
+        // not feed the messages back into Claude Code (the subprocess
+        // doesn't have that context). Sending a new message kicks off a
+        // brand-new claude session.
+        agent.clearHistory();
+        chat.clear();
+        currentAssistant = null;
+        pendingTools.clear();
+        for (Conversation.Message m : c.messages()) {
+            MessageBlock.Role role = switch (m.role()) {
+                case Conversation.Message.USER -> MessageBlock.Role.USER;
+                case Conversation.Message.ERROR -> MessageBlock.Role.ERROR;
+                default -> MessageBlock.Role.ASSISTANT;
+            };
+            MessageBlock b = new MessageBlock(role);
+            if (role == MessageBlock.Role.ERROR) b.appendPlain(m.text());
+            else b.appendMarkdown(m.text());
+            chat.addMessage(b);
+        }
+        current = c;
+        sidebar.setSelected(c.id());
+        Path repoCwd = c.cwd().isBlank() ? agent.cwd() : Paths.get(c.cwd());
+        if (!repoCwd.equals(agent.cwd())) agent.setCwd(repoCwd);
+        if (!c.model().isBlank() && !c.model().equals(agent.getModel())) agent.setModel(c.model());
+        cwdLabel.setText(agent.cwd().toString());
+        refreshGitState();
+    }
+
+    private void pickDirectory() {
+        DirectoryChooser dc = new DirectoryChooser();
+        dc.setTitle("Working directory");
+        dc.setInitialDirectory(agent.cwd().toFile());
+        java.io.File picked = dc.showDialog(stage);
+        if (picked != null) switchCwd(picked.toPath());
+    }
+
+    private void switchCwd(Path p) {
+        agent.setCwd(p);
+        current.setCwd(p.toString());
+        store.save(current);
+        cwdLabel.setText(p.toString());
+        refreshGitState();
+    }
+
+    private void runGit(java.util.function.Supplier<GitOps.Result> op, String label) {
+        String startStatus = statusLabel.getText();
+        statusLabel.setText(label + "…");
+        Thread t = new Thread(() -> {
+            GitOps.Result r = op.get();
+            Platform.runLater(() -> {
+                MessageBlock b = new MessageBlock(r.ok() ? MessageBlock.Role.ASSISTANT : MessageBlock.Role.ERROR);
+                String prefix = label + (r.ok() ? " succeeded:\n\n```\n" : " failed (exit " + r.exit() + "):\n\n```\n");
+                b.appendMarkdown(prefix + r.output() + "\n```");
+                chat.addMessage(b);
+                statusLabel.setText(startStatus);
+                refreshGitState();
+            });
+        }, "git-" + label.toLowerCase());
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void refreshGitState() {
+        Path cwd = agent == null ? null : agent.cwd();
+        if (cwd == null || !GitOps.isRepo(cwd)) {
+            branchLabel.setText("");
+            branchLabel.setVisible(false);
+            pullBtn.setVisible(false);
+            pushBtn.setVisible(false);
+            return;
+        }
+        String branch = GitOps.currentBranch(cwd);
+        branchLabel.setText("⎇ " + branch);
+        branchLabel.setVisible(true);
+        pullBtn.setVisible(true);
+        pushBtn.setVisible(true);
+    }
+
+    private void openSettings() {
+        SettingsDialog.Result r = SettingsDialog.show(
+                stage, agent.getModel(), agent.cwd(), MODELS, auth,
+                model -> agent.setModel(model),
+                cwd -> { switchCwd(cwd); }
+        );
+        if (r.signedOut()) {
+            // Fully restart into the sign-in scene.
+            agent.shutdown();
+            stage.setScene(SignInScene.build(auth, this::buildMainScene));
+        }
+    }
+
+    // ----------------------------------------------------------------- error scene
+
     private Scene missingClaudeScene(String detail) {
         VBox box = new VBox(12);
         box.setAlignment(Pos.CENTER);
@@ -237,7 +401,7 @@ public final class AgentApp extends Application {
         box.getStyleClass().add("root");
 
         Label title = new Label("Claude Code CLI not found");
-        title.getStyleClass().add("app-title");
+        title.getStyleClass().add("welcome-title");
 
         Label body = new Label(
                 "This app drives the Claude Code CLI as a subprocess so it can\n"
@@ -252,9 +416,8 @@ public final class AgentApp extends Application {
         body.getStyleClass().add("missing-key-body");
 
         box.getChildren().addAll(title, body);
-        Scene s = new Scene(box, 600, 420);
-        s.getStylesheets().add(
-                getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
+        Scene s = new Scene(box, 600, 460);
+        s.getStylesheets().add(getClass().getResource("/io/fathereye/agent/app.css").toExternalForm());
         return s;
     }
 }
