@@ -47,7 +47,7 @@ public final class Sidebar extends VBox {
     private String selectedId;
     private final ProgressBar usageBar = new ProgressBar(0);
     private final Label usageLabel = new Label("");
-    private double budgetUsd = 5.0;
+    private int messageLimit = 50;
 
     public Sidebar(ConversationStore store,
                    Consumer<Conversation> onSelect,
@@ -116,24 +116,26 @@ public final class Sidebar extends VBox {
 
     public void refresh() { Platform.runLater(this::doRefresh); }
 
-    /** Update the budget the progress bar fills against. */
-    public void setBudgetUsd(double b) { this.budgetUsd = Math.max(0, b); }
+    /** Update the message limit the progress bar fills against. */
+    public void setMessageLimit(int n) { this.messageLimit = Math.max(0, n); }
 
     /** Update the usage display from the latest UsageStats snapshot.
-     *  Safe to call from any thread. */
+     *  Safe to call from any thread. The bar fills against
+     *  {@code messages used / messageLimit} (i.e. direct usage), with
+     *  the running cost shown in the label as supplemental context. */
     public void setUsage(UsageStats stats) {
         if (stats == null) return;
-        double cost = stats.costUsd();
-        double frac = budgetUsd <= 0 ? 0 : Math.min(1.0, cost / budgetUsd);
-        String fillPct = budgetUsd <= 0
-                ? String.format("$%.2f spent · %s tokens", cost, fmtTokens(stats.totalTokens()))
-                : String.format("$%.2f / $%.2f · %d%% · %s tokens",
-                        cost, budgetUsd, (int) Math.round(frac * 100),
-                        fmtTokens(stats.totalTokens()));
-        boolean over = budgetUsd > 0 && cost > budgetUsd;
+        long turns = stats.turns();
+        double frac = messageLimit <= 0 ? 0 : Math.min(1.0, turns / (double) messageLimit);
+        String text = messageLimit <= 0
+                ? String.format("%d message%s · %s tokens · $%.2f",
+                        turns, turns == 1 ? "" : "s", fmtTokens(stats.totalTokens()), stats.costUsd())
+                : String.format("%d / %d messages · %s tokens · $%.2f",
+                        turns, messageLimit, fmtTokens(stats.totalTokens()), stats.costUsd());
+        boolean over = messageLimit > 0 && turns > messageLimit;
         Platform.runLater(() -> {
-            usageBar.setProgress(budgetUsd <= 0 ? 0 : frac);
-            usageLabel.setText(fillPct);
+            usageBar.setProgress(messageLimit <= 0 ? 0 : frac);
+            usageLabel.setText(text);
             if (over) usageBar.getStyleClass().add("sidebar-usage-bar-over");
             else usageBar.getStyleClass().remove("sidebar-usage-bar-over");
         });

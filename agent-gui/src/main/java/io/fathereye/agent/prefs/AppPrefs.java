@@ -53,14 +53,16 @@ public final class AppPrefs {
         }
     }
 
-    /** Session cost budget in USD. Drives the sidebar progress bar.
-     *  0 = no budget (bar shows raw spend, never red). */
-    public double budgetUsd() {
-        return root.path("budgetUsd").asDouble(5.0);
+    /** Number of messages the sidebar progress bar fills against. This is
+     *  the user's expected per-session usage cap — defaults to 50, which
+     *  is in the ballpark of Claude Pro's per-5-hour-window quota. Set
+     *  to 0 to hide the bar. */
+    public int messageLimit() {
+        return root.path("messageLimit").asInt(50);
     }
 
-    public void setBudgetUsd(double v) {
-        root.put("budgetUsd", v);
+    public void setMessageLimit(int v) {
+        root.put("messageLimit", Math.max(0, v));
         save();
     }
 }

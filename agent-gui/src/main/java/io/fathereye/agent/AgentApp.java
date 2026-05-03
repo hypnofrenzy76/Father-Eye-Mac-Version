@@ -137,7 +137,7 @@ public final class AgentApp extends Application {
 
         sidebar = new Sidebar(store, this::loadConversation, this::newConversation, this::openSettings);
         sidebar.setSelected(current.id());
-        sidebar.setBudgetUsd(prefs.budgetUsd());
+        sidebar.setMessageLimit(prefs.messageLimit());
         sidebar.setUsage(agent.usageStats());
 
         BorderPane center = new BorderPane();
@@ -417,7 +417,7 @@ public final class AgentApp extends Application {
                 agent.usageStats(), prefs,
                 model -> agent.setModel(model),
                 cwd -> { switchCwd(cwd); },
-                budget -> { sidebar.setBudgetUsd(budget); sidebar.setUsage(agent.usageStats()); }
+                limit -> { sidebar.setMessageLimit(limit); sidebar.setUsage(agent.usageStats()); }
         );
         if (r.signedOut()) {
             agent.shutdown();

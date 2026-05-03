@@ -37,18 +37,55 @@ public final class GitHubAuth {
 
     /** Fast inspection — runs in the background. */
     public Status inspect() {
-        // Prefer `gh` if installed.
-        Result gh = run(5, "gh", "auth", "status", "-h", "github.com");
-        if (gh.exit == 0 && gh.output.contains("Logged in to github.com")) {
-            String account = parseGhAccount(gh.output);
+        // Prefer `gh` if installed. Resolve via login shell (so freshly
+        // installed binaries in ~/.local/bin from autoInstall are picked
+        // up without needing an app restart) before invoking.
+        String gh = findGh();
+        if (gh == null) {
+            return fallbackInspect(true);
+        }
+        Result r = run(5, gh, "auth", "status", "-h", "github.com");
+        if (r.exit == 0 && r.output.contains("Logged in to github.com")) {
+            String account = parseGhAccount(r.output);
             return new Status(State.SIGNED_IN_GH,
                     account == null ? "Signed in via gh CLI" : "Signed in as " + account);
         }
-        if (gh.exit == 127 || gh.output.contains("command not found")) {
-            // Try the next signal.
-            return fallbackInspect(true);
-        }
         return fallbackInspect(false);
+    }
+
+    /**
+     * Resolve {@code gh}'s full path, looking through the user's login-shell
+     * PATH and a small set of known install locations (including
+     * {@code ~/.local/bin/gh} where {@link #autoInstall} drops it).
+     * Returns null if not installed.
+     */
+    public static String findGh() {
+        // 1. Login shell PATH lookup.
+        try {
+            ProcessBuilder pb = new ProcessBuilder("/bin/zsh", "-lic", "command -v gh || true");
+            pb.redirectErrorStream(false);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            p.waitFor(5, TimeUnit.SECONDS);
+            if (!out.isEmpty()) {
+                String first = out.split("\\R", 2)[0].trim();
+                if (new java.io.File(first).canExecute()) return first;
+            }
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+        }
+        // 2. Known install locations.
+        String home = System.getProperty("user.home");
+        String[] candidates = {
+                home + "/.local/bin/gh",
+                "/opt/homebrew/bin/gh",
+                "/usr/local/bin/gh",
+                home + "/.npm-global/bin/gh"
+        };
+        for (String c : candidates) {
+            if (new java.io.File(c).canExecute()) return c;
+        }
+        return null;
     }
 
     private Status fallbackInspect(boolean noGh) {
@@ -101,7 +138,9 @@ public final class GitHubAuth {
     }
 
     public boolean signOut() {
-        Result r = run(10, "gh", "auth", "logout", "-h", "github.com");
+        String gh = findGh();
+        if (gh == null) return false;
+        Result r = run(10, gh, "auth", "logout", "-h", "github.com");
         return r.exit == 0;
     }
 

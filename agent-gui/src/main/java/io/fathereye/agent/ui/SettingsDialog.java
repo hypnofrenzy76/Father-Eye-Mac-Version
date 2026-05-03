@@ -48,7 +48,7 @@ public final class SettingsDialog {
                               AppPrefs prefs,
                               Consumer<String> liveModelChange,
                               Consumer<Path> liveCwdChange,
-                              Consumer<Double> liveBudgetChange) {
+                              java.util.function.IntConsumer liveLimitChange) {
         Stage st = new Stage();
         st.initOwner(owner);
         st.initModality(Modality.WINDOW_MODAL);
@@ -72,33 +72,35 @@ public final class SettingsDialog {
         // ----- Usage
         Label usageLabel = new Label(usage == null ? "" : usage.detailedDisplay());
         usageLabel.getStyleClass().add("settings-usage");
-        // Budget field (drives the sidebar progress bar). Plain
-        // TextField, validated on focus loss; 0 disables the bar.
-        TextField budgetField = new TextField(prefs == null ? "5.00"
-                : String.format("%.2f", prefs.budgetUsd()));
-        budgetField.setPrefColumnCount(8);
-        budgetField.getStyleClass().add("input-area");
-        Runnable applyBudget = () -> {
+        // Message-limit field. Drives the sidebar progress bar -- it
+        // fills against actual messages used, not against a cost budget.
+        TextField limitField = new TextField(prefs == null ? "50"
+                : Integer.toString(prefs.messageLimit()));
+        limitField.setPrefColumnCount(6);
+        limitField.getStyleClass().add("input-area");
+        Runnable applyLimit = () -> {
             try {
-                double v = Double.parseDouble(budgetField.getText().trim());
+                int v = Integer.parseInt(limitField.getText().trim());
                 if (v < 0) v = 0;
-                if (prefs != null) prefs.setBudgetUsd(v);
-                if (liveBudgetChange != null) liveBudgetChange.accept(v);
+                if (prefs != null) prefs.setMessageLimit(v);
+                if (liveLimitChange != null) liveLimitChange.accept(v);
             } catch (NumberFormatException ignored) {}
         };
-        budgetField.focusedProperty().addListener((obs, was, now) -> { if (!now) applyBudget.run(); });
-        budgetField.setOnAction(e -> applyBudget.run());
-        Label budgetHint = new Label(
-                "Sets the cap the sidebar progress bar fills against. "
-                + "Set to 0 to hide the bar. The Claude.ai subscription doesn't "
-                + "expose a real quota number, so this is your own session-spend limit "
-                + "(in USD-equivalent for the same usage on the API).");
-        budgetHint.setWrapText(true);
-        budgetHint.getStyleClass().add("settings-hint");
+        limitField.focusedProperty().addListener((obs, was, now) -> { if (!now) applyLimit.run(); });
+        limitField.setOnAction(e -> applyLimit.run());
+        Label limitHint = new Label(
+                "The sidebar progress bar fills against this — actual messages sent "
+                + "this session, not credit budget. Default 50 is in the ballpark of "
+                + "Claude Pro's per-5-hour quota. Set to 0 to hide the bar.\n\n"
+                + "(Claude.ai does not expose your real subscription quota through "
+                + "the Claude Code CLI, so this is a self-set cap rather than a true "
+                + "quota gauge.)");
+        limitHint.setWrapText(true);
+        limitHint.getStyleClass().add("settings-hint");
         VBox usageSection = section("Usage (this session)",
                 row(usageLabel, null),
-                row("Cost budget (USD)", budgetField),
-                row(budgetHint, null));
+                row("Message limit", limitField),
+                row(limitHint, null));
 
         // ----- Model
         ChoiceBox<String> modelPicker = new ChoiceBox<>();
@@ -152,16 +154,24 @@ public final class SettingsDialog {
                     ghSignOutBtn.setVisible(signedIn);
                     ghSignOutBtn.setManaged(signedIn);
                     if (s.state() == GitHubAuth.State.NO_GH_CLI) {
-                        // One button does it all: brew + gh. The user
-                        // gets a progress modal with live install output;
-                        // macOS pops its own admin-password sheet on top
-                        // of that during the Homebrew bootstrap.
+                        // One button does it all: detect macOS version,
+                        // download the matching gh release tarball, drop
+                        // it in ~/.local/bin/gh, and -- on success --
+                        // immediately open the sign-in dialog so the user
+                        // doesn't have to click "Sign in" as a separate
+                        // step. No admin password required.
                         ghSignInBtn.setText("Install GitHub CLI");
                         ghSignInBtn.setOnAction(ev -> {
                             boolean installed = InstallProgressDialog.show(st, ghAuth);
-                            ghStatus.setText(installed
-                                    ? "GitHub CLI installed. Click Sign in with GitHub."
-                                    : "GitHub CLI was not installed. Open the log and try again, or download the .pkg from cli.github.com.");
+                            if (installed) {
+                                ghStatus.setText("GitHub CLI installed. Starting sign-in…");
+                                boolean justSignedIn = GitHubLoginDialog.show(st);
+                                ghStatus.setText(justSignedIn
+                                        ? "Signed in. Refreshing…"
+                                        : "Sign-in cancelled. Click Sign in with GitHub when ready.");
+                            } else {
+                                ghStatus.setText("GitHub CLI was not installed. Try again, or download the .pkg from cli.github.com.");
+                            }
                             refreshGhRef[0].run();
                         });
                     } else {

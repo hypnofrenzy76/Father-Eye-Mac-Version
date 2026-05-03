@@ -118,8 +118,16 @@ public final class GitHubLoginDialog {
 
         worker[0] = new Thread(() -> {
             try {
+                String ghPath = io.fathereye.agent.git.GitHubAuth.findGh();
+                if (ghPath == null) {
+                    Platform.runLater(() -> {
+                        status.setText("GitHub CLI not found. Install it from Settings → GitHub first.");
+                        spinner.setVisible(false);
+                    });
+                    return;
+                }
                 ProcessBuilder pb = new ProcessBuilder(
-                        "gh", "auth", "login",
+                        ghPath, "auth", "login",
                         "--web",
                         "--hostname", "github.com",
                         "--git-protocol", "https");
@@ -178,7 +186,7 @@ public final class GitHubLoginDialog {
                 // but rerun explicitly so the wiring is unambiguous.
                 if (ok) {
                     try {
-                        ProcessBuilder setupPb = new ProcessBuilder("gh", "auth", "setup-git");
+                        ProcessBuilder setupPb = new ProcessBuilder(ghPath, "auth", "setup-git");
                         setupPb.redirectErrorStream(true);
                         Process sp = setupPb.start();
                         sp.waitFor(15, TimeUnit.SECONDS);
