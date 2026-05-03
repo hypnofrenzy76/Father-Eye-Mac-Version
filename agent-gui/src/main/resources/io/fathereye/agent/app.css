@@ -132,6 +132,26 @@
     -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
     -fx-font-size: 12px;
 }
+.message-footer {
+    -fx-padding: 4 0 0 0;
+    -fx-spacing: 6;
+    -fx-opacity: 0;
+}
+.message:hover .message-footer { -fx-opacity: 1; }
+.message-action {
+    -fx-background-color: transparent;
+    -fx-text-fill: #6E6E6D;
+    -fx-border-color: #E0DCD2;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+    -fx-padding: 2 10 2 10;
+    -fx-font-size: 11px;
+    -fx-cursor: hand;
+}
+.message-action:hover {
+    -fx-background-color: rgba(0,0,0,0.04);
+    -fx-text-fill: #1F1F1E;
+}
 
 /* ----------------------------- markdown body ---------------------------- */
 
@@ -210,12 +230,28 @@
 }
 .md-code-lang-row {
     -fx-padding: 0 0 4 0;
+    -fx-alignment: center-left;
 }
 .md-code-lang {
     -fx-fill: #9B9994;
     -fx-font-family: "SF Mono", "Menlo", "Consolas", monospace;
     -fx-font-size: 10.5px;
 }
+.md-code-copy {
+    -fx-background-color: transparent;
+    -fx-text-fill: #9B9994;
+    -fx-border-color: #3A3A38;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+    -fx-padding: 1 8 1 8;
+    -fx-font-size: 10.5px;
+    -fx-cursor: hand;
+}
+.md-code-copy:hover {
+    -fx-text-fill: #E8E6E1;
+    -fx-border-color: #5A5A58;
+}
+.md-code-copy:pressed { -fx-text-fill: #FFFFFF; }
 .md-code-body {
     -fx-line-spacing: 2;
 }

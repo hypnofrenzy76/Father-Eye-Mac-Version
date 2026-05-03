@@ -234,6 +234,15 @@ public final class AgentService {
         argv.add("--output-format"); argv.add("stream-json");
         argv.add("--verbose");
         argv.add("--model"); argv.add(model);
+        // Run in non-interactive permission-bypass mode. Without this,
+        // Claude Code emits tool_use events with evaluated_permission=ask
+        // for every file write / bash command and waits for a
+        // tool_confirmation event back. We don't render a confirmation
+        // dialog (yet), so the agent would silently hang. The user
+        // explicitly opted into this app, which is morally equivalent
+        // to running `claude --permission-mode bypassPermissions`
+        // themselves.
+        argv.add("--permission-mode"); argv.add("bypassPermissions");
         if (pendingResumeId != null && !pendingResumeId.isBlank()) {
             argv.add("--resume"); argv.add(pendingResumeId);
             pendingResumeId = null;

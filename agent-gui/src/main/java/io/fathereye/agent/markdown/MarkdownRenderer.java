@@ -1,6 +1,9 @@
 package io.fathereye.agent.markdown;
 
 import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -186,14 +189,35 @@ public final class MarkdownRenderer {
         private Node codeBlock(String literal, String lang) {
             VBox box = new VBox();
             box.getStyleClass().add("md-code-block");
+
+            // Header row: optional language label on the left, Copy
+            // button on the right. The button is the workaround for
+            // JavaFX 17's TextFlow not supporting text selection.
+            HBox header = new HBox();
+            header.getStyleClass().add("md-code-lang-row");
             if (lang != null && !lang.isBlank()) {
                 Text label = new Text(lang.trim());
                 label.getStyleClass().add("md-code-lang");
                 TextFlow labelFlow = new TextFlow(label);
-                labelFlow.getStyleClass().add("md-code-lang-row");
-                box.getChildren().add(labelFlow);
+                header.getChildren().add(labelFlow);
             }
-            Text body = new Text(stripTrailingNewline(literal));
+            Region spacer = new Region();
+            HBox.setHgrow(spacer, Priority.ALWAYS);
+            header.getChildren().add(spacer);
+
+            final String code = stripTrailingNewline(literal);
+            Button copyBtn = new Button("Copy");
+            copyBtn.getStyleClass().add("md-code-copy");
+            copyBtn.setOnAction(e -> {
+                Clipboard cb = Clipboard.getSystemClipboard();
+                ClipboardContent cc = new ClipboardContent();
+                cc.putString(code);
+                cb.setContent(cc);
+            });
+            header.getChildren().add(copyBtn);
+            box.getChildren().add(header);
+
+            Text body = new Text(code);
             body.getStyleClass().add("md-code");
             TextFlow bodyFlow = new TextFlow(body);
             bodyFlow.getStyleClass().add("md-code-body");
