@@ -257,41 +257,43 @@ tasks.register('jpackageLinuxApp') {
 
 tasks.register('jpackageMacDmg') {
     group = 'distribution'
-    description = "Build ${feAgentAppName}.dmg installer (run on macOS only)."
-    dependsOn 'installDist'
+    description = "Build ${feAgentAppName}.dmg installer (run on macOS only). Wraps the .app from jpackageMacApp into a drag-to-Applications DMG."
+    // Wrap the already-built .app rather than re-running jpackage with
+    // --type dmg directly — we want the icon and the patched
+    // LSMinimumSystemVersion=10.13.0 plist that jpackageMacApp produces,
+    // which `jpackage --type dmg` skips.
+    dependsOn 'jpackageMacApp'
     doLast {
         def os = System.getProperty('os.name', '').toLowerCase()
         if (!os.contains('mac')) {
             throw new GradleException("jpackageMacDmg must run on macOS (current host: ${os}).")
         }
-        def libDir = layout.buildDirectory.dir('install/agent-gui/lib').get().asFile
         def outDir = rootProject.layout.projectDirectory.dir('dist').asFile
-        outDir.mkdirs()
-        def jpkg = "${System.getProperty('java.home')}/bin/jpackage"
-        def mainJar = libDir.listFiles().find {
-            it.name.startsWith('fathereye-agent-gui-') && it.name.endsWith('.jar')
-        }
-        if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
+        def appDir = new File(outDir, "${feAgentAppName}.app")
+        if (!appDir.exists()) throw new GradleException("expected ${appDir} from jpackageMacApp")
         def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
+        def dmgFile = new File(outDir, "${feAgentAppName}-${macAppVersion}.dmg")
+        if (dmgFile.exists()) dmgFile.delete()
 
-        def cmd = [
-                jpkg,
-                '--type', 'dmg',
-                '--name', feAgentAppName,
-                '--app-version', macAppVersion,
-                '--input', libDir.absolutePath,
-                '--main-jar', mainJar.name,
-                '--main-class', 'io.fathereye.agent.Launcher',
-                '--module-path', libDir.absolutePath,
-                '--add-modules', "${feAgentJdkModules},${feAgentFxModules}",
-                '--dest', outDir.absolutePath,
-                '--mac-package-identifier', feAgentMacBundleId,
-                '--mac-package-name', feAgentAppName,
-                '--vendor', 'Father Eye'
-        ]
-        feAgentJavaOptions.each { cmd << '--java-options' << it }
-        exec { commandLine cmd }
-        println "macOS dmg -> ${outDir}/${feAgentAppName}-${macAppVersion}.dmg"
+        // Stage the .app + an Applications symlink into a temp dir, then
+        // hdiutil-create a UDZO-compressed DMG from the staging dir.
+        // Result: opening the DMG shows the .app next to an Applications
+        // alias — drag the .app onto the alias to install.
+        def stage = new File(outDir, ".dmg-stage")
+        if (stage.exists()) stage.deleteDir()
+        stage.mkdirs()
+        exec { commandLine 'cp', '-R', appDir.absolutePath, stage.absolutePath }
+        exec { commandLine 'ln', '-s', '/Applications', new File(stage, 'Applications').absolutePath }
+
+        exec {
+            commandLine 'hdiutil', 'create',
+                    '-volname', feAgentAppName,
+                    '-srcfolder', stage.absolutePath,
+                    '-ov', '-format', 'UDZO',
+                    dmgFile.absolutePath
+        }
+        stage.deleteDir()
+        println "macOS dmg -> ${dmgFile}"
     }
 }
 
