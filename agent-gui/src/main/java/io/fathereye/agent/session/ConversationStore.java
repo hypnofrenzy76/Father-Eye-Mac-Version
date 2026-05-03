@@ -91,6 +91,7 @@ public final class ConversationStore {
                     m.path("role").asText("user"),
                     m.path("text").asText("")));
         }
+        String sid = n.path("claudeSessionId").asText("");
         return new Conversation(
                 n.path("id").asText(),
                 n.path("title").asText("(untitled)"),
@@ -98,6 +99,7 @@ public final class ConversationStore {
                 n.path("updatedAt").asLong(System.currentTimeMillis()),
                 n.path("cwd").asText(""),
                 n.path("model").asText(""),
+                sid.isEmpty() ? null : sid,
                 msgs);
     }
 
@@ -109,6 +111,7 @@ public final class ConversationStore {
         root.put("updatedAt", c.updatedAt());
         root.put("cwd", c.cwd());
         root.put("model", c.model());
+        if (c.claudeSessionId() != null) root.put("claudeSessionId", c.claudeSessionId());
         ArrayNode arr = root.putArray("messages");
         for (Conversation.Message m : c.messages()) {
             ObjectNode mn = arr.addObject();

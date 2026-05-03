@@ -84,36 +84,63 @@ public final class IconGenerator {
     }
 
     /**
-     * Approximate Apple silhouette. Two overlapping rounded blobs for the
-     * body, a circular bite from the right, a leaf at the top. All
-     * coordinates are in a 1000x1000 normalized space.
+     * Stylized Apple silhouette in a 1000x1000 normalized box. The shape
+     * has the four key visual elements of the 1977 Apple logo:
+     *
+     * <ol>
+     *   <li>An apple-pear body, slightly taller than wide, with the
+     *       characteristic two-hump top with a deep notch in the middle
+     *       (where the stem sits in the original).</li>
+     *   <li>A deep circular bite cut from the right side, with its center
+     *       roughly at the right shoulder of the body.</li>
+     *   <li>A leaf canted right, attached to the top notch.</li>
+     *   <li>Overall ~7:8 width-to-height aspect ratio, centered in the
+     *       1000x1000 box with a margin so it doesn't crash into the
+     *       icon edges.</li>
+     * </ol>
+     *
+     * <p>This is hand-drawn with cubic beziers — it's not a trace of the
+     * actual Apple trademark. It reads as "rainbow Apple" at icon sizes,
+     * which is what we need.
      */
     private static Area appleSilhouette() {
-        // Body: two overlapping circles to get the slightly heart-topped
-        // outline. The "indent" between the two top humps is implicit
-        // from where they overlap.
-        Ellipse2D leftBody = new Ellipse2D.Double(150, 240, 480, 660);
-        Ellipse2D rightBody = new Ellipse2D.Double(370, 240, 480, 660);
-        Area body = new Area(leftBody);
-        body.add(new Area(rightBody));
+        Path2D body = new Path2D.Double();
+        // Start at the deep V notch at the top center.
+        body.moveTo(500, 270);
+        // Right hump rises from the notch, then dives right to the
+        // shoulder.
+        body.curveTo(530, 220, 590, 200, 660, 215);
+        body.curveTo(780, 235, 880, 350, 905, 480);
+        // Right side curves down past the bite to the bottom-right.
+        body.curveTo(925, 620, 880, 770, 790, 870);
+        body.curveTo(720, 935, 620, 940, 560, 905);
+        // Center bottom — slight inward curve (the apple's "waist").
+        body.curveTo(525, 890, 500, 890, 500, 890);
+        body.curveTo(500, 890, 475, 890, 440, 905);
+        // Left side mirrors the right.
+        body.curveTo(380, 940, 280, 935, 210, 870);
+        body.curveTo(120, 770, 75, 620, 95, 480);
+        body.curveTo(120, 350, 220, 235, 340, 215);
+        body.curveTo(410, 200, 470, 220, 500, 270);
+        body.closePath();
 
-        // Smooth the bottom into a single arc (round the lower edges).
-        Ellipse2D bottom = new Ellipse2D.Double(150, 480, 700, 480);
-        body.add(new Area(bottom));
+        Area shape = new Area(body);
 
-        // Bite: circle subtracted from right side.
-        Ellipse2D bite = new Ellipse2D.Double(720, 360, 280, 280);
-        body.subtract(new Area(bite));
+        // Bite: circle subtracted from the upper-right shoulder. The
+        // position is what makes the shape unmistakably "apple" — it has
+        // to crash into the body, not just nibble at the edge.
+        Ellipse2D bite = new Ellipse2D.Double(770, 380, 280, 280);
+        shape.subtract(new Area(bite));
 
-        // Leaf at top: tilted ellipse.
-        Path2D.Double leaf = new Path2D.Double();
-        leaf.moveTo(540, 230);
-        leaf.curveTo(540, 90, 660, 50, 750, 90);
-        leaf.curveTo(720, 200, 620, 270, 540, 230);
+        // Leaf: tilted teardrop pointing upper-right from the notch.
+        Path2D leaf = new Path2D.Double();
+        leaf.moveTo(510, 250);
+        leaf.curveTo(530, 120, 640, 60, 760, 90);
+        leaf.curveTo(740, 220, 630, 280, 510, 260);
         leaf.closePath();
-        body.add(new Area(leaf));
+        shape.add(new Area(leaf));
 
-        return body;
+        return shape;
     }
 
     /** Produce all macOS iconset PNGs into {@code targetDir}. */

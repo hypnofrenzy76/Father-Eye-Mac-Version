@@ -22,18 +22,33 @@ public final class Conversation {
     private long updatedAt;
     private String cwd;
     private String model;
+    /** Claude Code's own session id, captured from the first system.init
+     *  event after spawn. Used to {@code --resume} this conversation
+     *  later with full agent context. May be null for very-first turns
+     *  before the init event lands. */
+    private String claudeSessionId;
     private final List<Message> messages;
 
     public Conversation(String id, String title, long createdAt, long updatedAt,
                         String cwd, String model, List<Message> messages) {
+        this(id, title, createdAt, updatedAt, cwd, model, null, messages);
+    }
+
+    public Conversation(String id, String title, long createdAt, long updatedAt,
+                        String cwd, String model, String claudeSessionId,
+                        List<Message> messages) {
         this.id = id;
         this.title = title;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.cwd = cwd;
         this.model = model;
+        this.claudeSessionId = claudeSessionId;
         this.messages = messages == null ? new ArrayList<>() : messages;
     }
+
+    public String claudeSessionId() { return claudeSessionId; }
+    public void setClaudeSessionId(String s) { this.claudeSessionId = s; this.updatedAt = System.currentTimeMillis(); }
 
     public String id() { return id; }
     public String title() { return title; }

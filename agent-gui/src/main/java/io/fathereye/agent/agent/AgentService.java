@@ -57,6 +57,10 @@ public final class AgentService {
     private final Path defaultCwd;
     private volatile Path cwd;
     private volatile String model;
+    /** Claude Code's session_id from the most recent {@code system.init} event. */
+    private volatile String currentSessionId;
+    /** If non-null, the next spawn passes {@code --resume <id>} to continue an old session. */
+    private volatile String pendingResumeId;
     private final String claudePath;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -95,6 +99,20 @@ public final class AgentService {
         this.cwd = cwd;
         respawn();
     }
+    /**
+     * Resume an old Claude Code session by id. The next spawn will pass
+     * {@code --resume <sessionId>} which continues the prior conversation
+     * with full agent context (tool history, prior thinking, file state
+     * the model has seen). If the resume fails (session not found on the
+     * user's machine, expired), Claude Code falls back to a fresh
+     * session — we don't try to detect that here.
+     */
+    public synchronized void resume(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return;
+        this.pendingResumeId = sessionId;
+        respawn();
+    }
+    public String getCurrentSessionId() { return currentSessionId; }
     public String getModel() { return model; }
     public Path cwd() { return cwd; }
 
@@ -206,16 +224,25 @@ public final class AgentService {
     }
 
     private synchronized void spawn() throws IOException {
-        ProcessBuilder pb = new ProcessBuilder(
-                claudePath,
-                "--print",
-                "--input-format", "stream-json",
-                "--output-format", "stream-json",
-                "--verbose",
-                "--model", model
-        );
+        // Build the argv. --resume is opt-in for the next spawn only;
+        // consumed and cleared here so a subsequent respawn (e.g. setModel
+        // mid-session) doesn't try to re-resume an outdated id.
+        java.util.List<String> argv = new java.util.ArrayList<>();
+        argv.add(claudePath);
+        argv.add("--print");
+        argv.add("--input-format"); argv.add("stream-json");
+        argv.add("--output-format"); argv.add("stream-json");
+        argv.add("--verbose");
+        argv.add("--model"); argv.add(model);
+        if (pendingResumeId != null && !pendingResumeId.isBlank()) {
+            argv.add("--resume"); argv.add(pendingResumeId);
+            pendingResumeId = null;
+        }
+        ProcessBuilder pb = new ProcessBuilder(argv);
         pb.directory(cwd.toFile());
         pb.redirectErrorStream(false);
+        // Reset session id; readLoop will set it from the next init event.
+        currentSessionId = null;
         // Surface PATH so npm-installed tools the agent calls (node, etc.)
         // resolve. We inherit our own env, which already contains our
         // (login-shell-augmented) PATH if AgentApp was launched correctly,
@@ -286,9 +313,15 @@ public final class AgentService {
         switch (type) {
             case "system":
                 // {type: "system", subtype: "init", session_id, model, tools, ...}
-                // No UI render. We could capture session_id for later --resume
-                // but a persistent process makes that unnecessary.
-                LOG.debug("system event subtype={}", event.path("subtype").asText());
+                // Capture session_id so the caller can persist it and later
+                // pass it to resume() to continue this conversation across
+                // launches with full agent context.
+                if ("init".equals(event.path("subtype").asText())) {
+                    String sid = event.path("session_id").asText("");
+                    if (!sid.isEmpty()) currentSessionId = sid;
+                }
+                LOG.debug("system event subtype={} session_id={}",
+                        event.path("subtype").asText(), currentSessionId);
                 break;
             case "assistant":
                 handleAssistant(event, l);

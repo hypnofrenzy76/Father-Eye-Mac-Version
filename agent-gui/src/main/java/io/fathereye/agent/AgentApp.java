@@ -257,6 +257,14 @@ public final class AgentApp extends Application {
                 if (card != null) card.setResult(result);
             }
             @Override public void onTurnComplete() {
+                // Capture Claude Code's session id if it landed since the
+                // last save. With it persisted, loadConversation can
+                // --resume this conversation later with full agent state.
+                String sid = agent.getCurrentSessionId();
+                if (sid != null && !sid.equals(current.claudeSessionId())) {
+                    current.setClaudeSessionId(sid);
+                    store.save(current);
+                }
                 setBusy(false);
                 input.requestFocus();
                 sidebar.refresh();
@@ -301,11 +309,15 @@ public final class AgentApp extends Application {
     }
 
     private void loadConversation(Conversation c) {
-        // Persisted conversations are visual review only. Loading does
-        // not feed the messages back into Claude Code (the subprocess
-        // doesn't have that context). Sending a new message kicks off a
-        // brand-new claude session.
-        agent.clearHistory();
+        // Two paths:
+        //   (a) c has a Claude Code session id we recorded earlier ->
+        //       resume that session via `--resume <id>`. The next user
+        //       message goes into a Claude Code process that already
+        //       knows the prior turns, tool calls, and file state. This
+        //       is the "real" continuation.
+        //   (b) no session id -> visual review only. The chat shows the
+        //       persisted messages but a new user message starts a fresh
+        //       Claude Code session.
         chat.clear();
         currentAssistant = null;
         pendingTools.clear();
@@ -323,8 +335,16 @@ public final class AgentApp extends Application {
         current = c;
         sidebar.setSelected(c.id());
         Path repoCwd = c.cwd().isBlank() ? agent.cwd() : Paths.get(c.cwd());
+        // Apply cwd / model first (these respawn). resume() also respawns,
+        // so order them so the final respawn carries --resume.
         if (!repoCwd.equals(agent.cwd())) agent.setCwd(repoCwd);
         if (!c.model().isBlank() && !c.model().equals(agent.getModel())) agent.setModel(c.model());
+        if (c.claudeSessionId() != null && !c.claudeSessionId().isBlank()) {
+            agent.resume(c.claudeSessionId());
+            statusLabel.setText("resumed");
+        } else {
+            agent.clearHistory();
+        }
         cwdLabel.setText(agent.cwd().toString());
         refreshGitState();
     }
