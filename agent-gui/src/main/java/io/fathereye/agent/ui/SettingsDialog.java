@@ -2,7 +2,9 @@ package io.fathereye.agent.ui;
 
 import io.fathereye.agent.auth.Auth;
 import io.fathereye.agent.git.GitHubAuth;
+import io.fathereye.agent.prefs.AppPrefs;
 import io.fathereye.agent.usage.UsageStats;
+import javafx.scene.control.TextField;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -43,8 +45,10 @@ public final class SettingsDialog {
 
     public static Result show(Window owner, String currentModel, Path currentCwd,
                               List<String> models, Auth auth, UsageStats usage,
+                              AppPrefs prefs,
                               Consumer<String> liveModelChange,
-                              Consumer<Path> liveCwdChange) {
+                              Consumer<Path> liveCwdChange,
+                              Consumer<Double> liveBudgetChange) {
         Stage st = new Stage();
         st.initOwner(owner);
         st.initModality(Modality.WINDOW_MODAL);
@@ -68,7 +72,33 @@ public final class SettingsDialog {
         // ----- Usage
         Label usageLabel = new Label(usage == null ? "" : usage.detailedDisplay());
         usageLabel.getStyleClass().add("settings-usage");
-        VBox usageSection = section("Usage (this session)", row(usageLabel, null));
+        // Budget field (drives the sidebar progress bar). Plain
+        // TextField, validated on focus loss; 0 disables the bar.
+        TextField budgetField = new TextField(prefs == null ? "5.00"
+                : String.format("%.2f", prefs.budgetUsd()));
+        budgetField.setPrefColumnCount(8);
+        budgetField.getStyleClass().add("input-area");
+        Runnable applyBudget = () -> {
+            try {
+                double v = Double.parseDouble(budgetField.getText().trim());
+                if (v < 0) v = 0;
+                if (prefs != null) prefs.setBudgetUsd(v);
+                if (liveBudgetChange != null) liveBudgetChange.accept(v);
+            } catch (NumberFormatException ignored) {}
+        };
+        budgetField.focusedProperty().addListener((obs, was, now) -> { if (!now) applyBudget.run(); });
+        budgetField.setOnAction(e -> applyBudget.run());
+        Label budgetHint = new Label(
+                "Sets the cap the sidebar progress bar fills against. "
+                + "Set to 0 to hide the bar. The Claude.ai subscription doesn't "
+                + "expose a real quota number, so this is your own session-spend limit "
+                + "(in USD-equivalent for the same usage on the API).");
+        budgetHint.setWrapText(true);
+        budgetHint.getStyleClass().add("settings-hint");
+        VBox usageSection = section("Usage (this session)",
+                row(usageLabel, null),
+                row("Cost budget (USD)", budgetField),
+                row(budgetHint, null));
 
         // ----- Model
         ChoiceBox<String> modelPicker = new ChoiceBox<>();
@@ -122,40 +152,18 @@ public final class SettingsDialog {
                     ghSignOutBtn.setVisible(signedIn);
                     ghSignOutBtn.setManaged(signedIn);
                     if (s.state() == GitHubAuth.State.NO_GH_CLI) {
-                        // Two paths from here: if brew is already installed,
-                        // run `brew install gh` directly with live progress.
-                        // Otherwise open cli.github.com in the user's
-                        // browser so they can grab the .pkg installer.
-                        boolean brew = ghAuth.brewAvailable();
-                        if (brew) {
-                            ghSignInBtn.setText("Install GitHub CLI (brew)");
-                            ghSignInBtn.setOnAction(ev -> {
-                                ghSignInBtn.setDisable(true);
-                                ghStatus.setText("Running `brew install gh`…");
-                                new Thread(() -> {
-                                    boolean ok;
-                                    try { ok = ghAuth.brewInstallGh(line ->
-                                            Platform.runLater(() -> ghStatus.setText(line)));
-                                    } catch (Exception ex) { ok = false; }
-                                    final boolean done = ok;
-                                    Platform.runLater(() -> {
-                                        ghSignInBtn.setDisable(false);
-                                        ghStatus.setText(done
-                                                ? "GitHub CLI installed."
-                                                : "Install failed. See logs (~/Library/Logs/Claude for High Sierra/) or run `brew install gh` in Terminal manually.");
-                                        refreshGhRef[0].run();
-                                    });
-                                }, "brew-install-gh").start();
-                            });
-                        } else {
-                            ghSignInBtn.setText("Open cli.github.com…");
-                            ghSignInBtn.setOnAction(ev -> {
-                                GitHubAuth.openInBrowser("https://cli.github.com/");
-                                ghStatus.setText(
-                                        "Opening https://cli.github.com/ — download the macOS .pkg installer, then reopen Settings.\n"
-                                        + "Or install Homebrew first (https://brew.sh/) and use `brew install gh`.");
-                            });
-                        }
+                        // One button does it all: brew + gh. The user
+                        // gets a progress modal with live install output;
+                        // macOS pops its own admin-password sheet on top
+                        // of that during the Homebrew bootstrap.
+                        ghSignInBtn.setText("Install GitHub CLI");
+                        ghSignInBtn.setOnAction(ev -> {
+                            boolean installed = InstallProgressDialog.show(st, ghAuth);
+                            ghStatus.setText(installed
+                                    ? "GitHub CLI installed. Click Sign in with GitHub."
+                                    : "GitHub CLI was not installed. Open the log and try again, or download the .pkg from cli.github.com.");
+                            refreshGhRef[0].run();
+                        });
                     } else {
                         ghSignInBtn.setText("Sign in with GitHub");
                         ghSignInBtn.setOnAction(ev -> {

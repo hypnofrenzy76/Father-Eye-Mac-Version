@@ -2,11 +2,13 @@ package io.fathereye.agent.ui;
 
 import io.fathereye.agent.session.Conversation;
 import io.fathereye.agent.session.ConversationStore;
+import io.fathereye.agent.usage.UsageStats;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.HBox;
@@ -43,7 +45,9 @@ public final class Sidebar extends VBox {
     private final Runnable onNew;
     private final Runnable onSettings;
     private String selectedId;
+    private final ProgressBar usageBar = new ProgressBar(0);
     private final Label usageLabel = new Label("");
+    private double budgetUsd = 5.0;
 
     public Sidebar(ConversationStore store,
                    Consumer<Conversation> onSelect,
@@ -90,6 +94,11 @@ public final class Sidebar extends VBox {
         usageLabel.getStyleClass().add("sidebar-usage");
         usageLabel.setMaxWidth(Double.MAX_VALUE);
         usageLabel.setWrapText(true);
+        usageBar.getStyleClass().add("sidebar-usage-bar");
+        usageBar.setMaxWidth(Double.MAX_VALUE);
+        usageBar.setPrefHeight(6);
+        VBox usageBox = new VBox(4, usageBar, usageLabel);
+        usageBox.getStyleClass().add("sidebar-usage-box");
 
         VBox top = new VBox(10, title, newBtn);
         top.setPadding(new Insets(20, 14, 12, 14));
@@ -98,7 +107,7 @@ public final class Sidebar extends VBox {
         middle.setPadding(new Insets(0, 14, 8, 14));
         VBox.setVgrow(middle, Priority.ALWAYS);
 
-        VBox bottom = new VBox(6, usageLabel, settingsBtn);
+        VBox bottom = new VBox(8, usageBox, settingsBtn);
         bottom.setPadding(new Insets(8, 14, 14, 14));
 
         getChildren().addAll(top, middle, bottom);
@@ -107,9 +116,33 @@ public final class Sidebar extends VBox {
 
     public void refresh() { Platform.runLater(this::doRefresh); }
 
-    /** Update the usage line at the bottom of the sidebar. Safe to call from any thread. */
-    public void setUsageText(String s) {
-        Platform.runLater(() -> usageLabel.setText(s == null ? "" : s));
+    /** Update the budget the progress bar fills against. */
+    public void setBudgetUsd(double b) { this.budgetUsd = Math.max(0, b); }
+
+    /** Update the usage display from the latest UsageStats snapshot.
+     *  Safe to call from any thread. */
+    public void setUsage(UsageStats stats) {
+        if (stats == null) return;
+        double cost = stats.costUsd();
+        double frac = budgetUsd <= 0 ? 0 : Math.min(1.0, cost / budgetUsd);
+        String fillPct = budgetUsd <= 0
+                ? String.format("$%.2f spent · %s tokens", cost, fmtTokens(stats.totalTokens()))
+                : String.format("$%.2f / $%.2f · %d%% · %s tokens",
+                        cost, budgetUsd, (int) Math.round(frac * 100),
+                        fmtTokens(stats.totalTokens()));
+        boolean over = budgetUsd > 0 && cost > budgetUsd;
+        Platform.runLater(() -> {
+            usageBar.setProgress(budgetUsd <= 0 ? 0 : frac);
+            usageLabel.setText(fillPct);
+            if (over) usageBar.getStyleClass().add("sidebar-usage-bar-over");
+            else usageBar.getStyleClass().remove("sidebar-usage-bar-over");
+        });
+    }
+
+    private static String fmtTokens(long n) {
+        if (n < 1000) return Long.toString(n);
+        if (n < 1_000_000) return String.format("%.1fK", n / 1000.0);
+        return String.format("%.2fM", n / 1_000_000.0);
     }
 
     private void doRefresh() {

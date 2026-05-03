@@ -73,6 +73,7 @@ public final class AgentApp extends Application {
     private Auth auth;
     private AgentService agent;
     private ConversationStore store;
+    private io.fathereye.agent.prefs.AppPrefs prefs;
     private Conversation current;
 
     private Stage stage;
@@ -107,6 +108,7 @@ public final class AgentApp extends Application {
         }
         this.auth = new Auth(claudePath);
         this.store = new ConversationStore();
+        this.prefs = new io.fathereye.agent.prefs.AppPrefs();
 
         if (!auth.isLoggedIn()) {
             stage.setScene(SignInScene.build(auth, this::buildMainScene));
@@ -135,6 +137,8 @@ public final class AgentApp extends Application {
 
         sidebar = new Sidebar(store, this::loadConversation, this::newConversation, this::openSettings);
         sidebar.setSelected(current.id());
+        sidebar.setBudgetUsd(prefs.budgetUsd());
+        sidebar.setUsage(agent.usageStats());
 
         BorderPane center = new BorderPane();
         center.setTop(buildWorkspaceBar(cwd));
@@ -276,7 +280,7 @@ public final class AgentApp extends Application {
                 input.requestFocus();
                 sidebar.refresh();
                 sidebar.setSelected(current.id());
-                sidebar.setUsageText(agent.usageStats().shortDisplay());
+                sidebar.setUsage(agent.usageStats());
             }
             @Override public void onError(Throwable t) {
                 LOG.error("agent error", t);
@@ -410,12 +414,12 @@ public final class AgentApp extends Application {
     private void openSettings() {
         SettingsDialog.Result r = SettingsDialog.show(
                 stage, agent.getModel(), agent.cwd(), MODELS, auth,
-                agent.usageStats(),
+                agent.usageStats(), prefs,
                 model -> agent.setModel(model),
-                cwd -> { switchCwd(cwd); }
+                cwd -> { switchCwd(cwd); },
+                budget -> { sidebar.setBudgetUsd(budget); sidebar.setUsage(agent.usageStats()); }
         );
         if (r.signedOut()) {
-            // Fully restart into the sign-in scene.
             agent.shutdown();
             stage.setScene(SignInScene.build(auth, this::buildMainScene));
         }

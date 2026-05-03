@@ -143,6 +143,203 @@ public final class GitHubAuth {
         }
     }
 
+    /**
+     * One-shot installer: makes sure {@code gh} is on the user's PATH.
+     * Streams progress lines to {@code progress} so the caller can
+     * render a live install log.
+     *
+     * <p>Strategy: download the upstream gh release tarball directly to
+     * {@code ~/.local/bin/gh}. No Homebrew dependency, no admin
+     * password, works on every macOS version we care about — including
+     * 10.13.6 High Sierra, which modern Homebrew refuses to install on
+     * and modern gh releases (2.45+) refuse to launch on. We pick a
+     * pinned gh version per macOS major version:
+     * <ul>
+     *   <li>10.13 (High Sierra): gh 2.0.0 — last release built with Go
+     *       1.17, which still supported 10.13 syscalls.</li>
+     *   <li>10.14 (Mojave): gh 2.20.0</li>
+     *   <li>10.15 (Catalina): gh 2.40.0</li>
+     *   <li>11+ (Big Sur and later): gh 2.60.0 — current stable.</li>
+     * </ul>
+     *
+     * <p>Tarball name pattern (per github.com/cli/cli releases):
+     * {@code gh_<ver>_macOS_<arch>.tar.gz} where {@code <arch>} is
+     * {@code amd64} for Intel and {@code arm64} for Apple Silicon. High
+     * Sierra is Intel-only by definition.
+     *
+     * @return true if {@code gh} is available after the run
+     */
+    public boolean autoInstall(java.util.function.Consumer<String> progress)
+            throws IOException, InterruptedException {
+        if (commandExists("gh")) {
+            progress.accept("GitHub CLI is already installed.");
+            return true;
+        }
+        String macVer = detectMacOSVersion();
+        String arch = detectArch();
+        String ghVer = pickGhVersion(macVer);
+        String archLabel = arch.equals("arm64") ? "arm64" : "amd64";
+        progress.accept("Detected macOS " + macVer + " (" + archLabel + ").");
+        progress.accept("Picking gh " + ghVer + " — the most recent release that runs on this macOS.");
+
+        String url = String.format(
+                "https://github.com/cli/cli/releases/download/v%s/gh_%s_macOS_%s.tar.gz",
+                ghVer, ghVer, archLabel);
+        String home = System.getProperty("user.home");
+        java.nio.file.Path workDir = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"),
+                "claude-hs-gh-install");
+        java.nio.file.Path tarFile = workDir.resolve("gh.tar.gz");
+        java.nio.file.Path extractDir = workDir.resolve("extracted");
+        java.nio.file.Path localBin = java.nio.file.Paths.get(home, ".local", "bin");
+        java.nio.file.Path destBin = localBin.resolve("gh");
+
+        progress.accept("Downloading " + url + " …");
+        java.nio.file.Files.createDirectories(workDir);
+        java.nio.file.Files.createDirectories(localBin);
+        if (java.nio.file.Files.exists(tarFile)) java.nio.file.Files.delete(tarFile);
+        boolean dl = streamProcess(progress, 600, "curl", "-fsSL", "-o", tarFile.toString(), url);
+        if (!dl) {
+            progress.accept("Download failed. Check your internet connection or the version pin.");
+            return false;
+        }
+        progress.accept("Extracting…");
+        if (java.nio.file.Files.exists(extractDir)) {
+            streamProcess(progress, 30, "rm", "-rf", extractDir.toString());
+        }
+        java.nio.file.Files.createDirectories(extractDir);
+        boolean tar = streamProcess(progress, 60, "tar", "-xzf", tarFile.toString(), "-C", extractDir.toString());
+        if (!tar) {
+            progress.accept("Extract failed.");
+            return false;
+        }
+        // Tarball layout: gh_<ver>_macOS_<arch>/bin/gh
+        String topDir = String.format("gh_%s_macOS_%s", ghVer, archLabel);
+        java.nio.file.Path srcGh = extractDir.resolve(topDir).resolve("bin").resolve("gh");
+        if (!java.nio.file.Files.isRegularFile(srcGh)) {
+            // Fallback: scan the extract dir for a file named "gh".
+            try (var s = java.nio.file.Files.walk(extractDir)) {
+                srcGh = s.filter(p -> p.getFileName().toString().equals("gh")
+                                && java.nio.file.Files.isRegularFile(p))
+                        .findFirst().orElse(null);
+            }
+            if (srcGh == null) {
+                progress.accept("Could not find gh binary in extracted archive.");
+                return false;
+            }
+        }
+        progress.accept("Installing to " + destBin + " …");
+        if (java.nio.file.Files.exists(destBin)) java.nio.file.Files.delete(destBin);
+        java.nio.file.Files.copy(srcGh, destBin);
+        streamProcess(progress, 5, "chmod", "+x", destBin.toString());
+
+        // Make sure ~/.local/bin is on the user's login PATH so a
+        // Finder-launched .app can find gh next time it probes via
+        // /bin/zsh -lic. Append once; idempotent.
+        ensureLocalBinOnPath(progress, localBin);
+
+        progress.accept("Installed gh " + ghVer + " at " + destBin);
+        progress.accept("GitHub CLI installed. ✓");
+        return java.nio.file.Files.isRegularFile(destBin) && java.nio.file.Files.isExecutable(destBin);
+    }
+
+    private static String detectMacOSVersion() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sw_vers", "-productVersion");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            p.waitFor(5, TimeUnit.SECONDS);
+            return out.isEmpty() ? "11.0" : out;
+        } catch (Exception e) {
+            return "11.0";
+        }
+    }
+
+    private static String detectArch() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("uname", "-m");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            p.waitFor(5, TimeUnit.SECONDS);
+            return "arm64".equals(out) ? "arm64" : "amd64";
+        } catch (Exception e) {
+            return "amd64";
+        }
+    }
+
+    private static String pickGhVersion(String macVer) {
+        // Parse leading two segments: "10.13.6" -> [10, 13]; "11.7.10" -> [11, 7].
+        String[] parts = macVer.split("\\.");
+        int major = parts.length > 0 ? safeInt(parts[0], 11) : 11;
+        int minor = parts.length > 1 ? safeInt(parts[1], 0) : 0;
+        if (major == 10) {
+            if (minor <= 13) return "2.0.0";   // High Sierra
+            if (minor == 14) return "2.20.0";  // Mojave
+            return "2.40.0";                   // Catalina
+        }
+        // 11 (Big Sur) and later — current stable. Bump as new releases land.
+        return "2.60.0";
+    }
+
+    private static int safeInt(String s, int fallback) {
+        try { return Integer.parseInt(s); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private static void ensureLocalBinOnPath(java.util.function.Consumer<String> progress,
+                                             java.nio.file.Path localBin) {
+        String home = System.getProperty("user.home");
+        java.nio.file.Path zprofile = java.nio.file.Paths.get(home, ".zprofile");
+        String marker = "# claude-for-high-sierra: add ~/.local/bin to PATH";
+        try {
+            String existing = java.nio.file.Files.exists(zprofile)
+                    ? java.nio.file.Files.readString(zprofile)
+                    : "";
+            if (existing.contains(marker)) return;
+            String append = "\n" + marker + "\nexport PATH=\"" + localBin + ":$PATH\"\n";
+            java.nio.file.Files.writeString(zprofile, append,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+            progress.accept("Added " + localBin + " to ~/.zprofile PATH.");
+        } catch (IOException e) {
+            LOG.warn("could not update {}: {}", zprofile, e.toString());
+        }
+    }
+
+    private static boolean commandExists(String binary) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("/bin/zsh", "-lic", "command -v " + binary);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            boolean done = p.waitFor(5, TimeUnit.SECONDS);
+            if (!done) { p.destroyForcibly(); return false; }
+            return p.exitValue() == 0 && !out.isBlank() && new java.io.File(out.split("\\R", 2)[0]).canExecute();
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static boolean streamProcess(java.util.function.Consumer<String> progress,
+                                         int timeoutSeconds, String... cmd)
+            throws IOException, InterruptedException {
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (progress != null) progress.accept(line);
+                LOG.info("[install] {}", line);
+            }
+        }
+        boolean done = p.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        if (!done) { p.destroyForcibly(); return false; }
+        return p.exitValue() == 0;
+    }
+
     // -------------------------------------------------------------------
 
     private record Result(int exit, String output) {}
