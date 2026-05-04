@@ -63,6 +63,47 @@ public final class AgentService {
     private volatile String pendingResumeId;
     /** Per-process usage counters, ingested from result events. */
     private final io.fathereye.agent.usage.UsageStats usage = new io.fathereye.agent.usage.UsageStats();
+    /** Cached login-shell PATH so Claude Code's bash tool can find gh,
+     *  brew, node, and other user-installed binaries. Resolved once
+     *  on first spawn. */
+    private static volatile String cachedLoginPath;
+
+    /**
+     * The user's full PATH as a login zsh would resolve it (i.e. with
+     * /etc/zprofile + ~/.zprofile + ~/.zshrc applied). Cached after the
+     * first call. Falls back to a hand-built PATH covering the most
+     * common bin dirs if the zsh probe fails.
+     */
+    private static String userLoginPath() {
+        if (cachedLoginPath != null) return cachedLoginPath;
+        try {
+            ProcessBuilder pb = new ProcessBuilder("/bin/zsh", "-lic", "printf '%s' \"$PATH\"");
+            pb.redirectErrorStream(false);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            p.waitFor(5, TimeUnit.SECONDS);
+            if (!out.isBlank()) {
+                cachedLoginPath = out;
+                LOG.debug("login PATH = {}", out);
+                return cachedLoginPath;
+            }
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+        }
+        // Fallback: hand-built PATH with the usual suspects, plus
+        // whatever the inherited PATH has.
+        String home = System.getProperty("user.home");
+        String inherited = System.getenv("PATH");
+        cachedLoginPath = String.join(":",
+                home + "/.local/bin",
+                home + "/.npm-global/bin",
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/bin",
+                "/usr/local/sbin",
+                inherited == null ? "/usr/bin:/bin:/usr/sbin:/sbin" : inherited);
+        return cachedLoginPath;
+    }
     private final String claudePath;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -253,6 +294,18 @@ public final class AgentService {
         ProcessBuilder pb = new ProcessBuilder(argv);
         pb.directory(cwd.toFile());
         pb.redirectErrorStream(false);
+        // Override PATH so Claude Code (and its bash tool) can find
+        // user-installed binaries — gh, brew, node, etc. A
+        // Finder-launched .app inherits launchd's minimal
+        // /usr/bin:/bin:/usr/sbin:/sbin, which doesn't include
+        // ~/.local/bin (where our installer drops gh) or any of the
+        // homebrew/npm-global bins. We resolve the user's full login
+        // PATH once at first spawn via /bin/zsh -lic and re-use it for
+        // every respawn this session.
+        String loginPath = userLoginPath();
+        if (loginPath != null && !loginPath.isBlank()) {
+            pb.environment().put("PATH", loginPath);
+        }
         // Reset session id; readLoop will set it from the next init event.
         currentSessionId = null;
         // Surface PATH so npm-installed tools the agent calls (node, etc.)
