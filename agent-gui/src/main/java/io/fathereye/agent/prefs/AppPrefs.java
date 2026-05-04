@@ -53,16 +53,21 @@ public final class AppPrefs {
         }
     }
 
-    /** Number of messages the sidebar progress bar fills against. This is
-     *  the user's expected per-session usage cap — defaults to 50, which
-     *  is in the ballpark of Claude Pro's per-5-hour-window quota. Set
-     *  to 0 to hide the bar. */
-    public int messageLimit() {
-        return root.path("messageLimit").asInt(50);
+    /** Total token estimate per 5-hour subscription window. Drives the
+     *  sidebar progress bar — bar fills against tokens used / this
+     *  estimate. Default 300K, which is the rough ballpark for Claude
+     *  Pro's per-5-hour quota; Max 5x is ~1.5M and Max 20x is ~6M.
+     *  Settings has one-click buttons for each tier.
+     *
+     *  <p>(Claude.ai's real quota isn't queryable through the Claude
+     *  Code CLI, so this stays a self-set estimate rather than a true
+     *  gauge.) Set to 0 to hide the bar. */
+    public long tokenEstimate() {
+        return root.path("tokenEstimate").asLong(300_000L);
     }
 
-    public void setMessageLimit(int v) {
-        root.put("messageLimit", Math.max(0, v));
+    public void setTokenEstimate(long v) {
+        root.put("tokenEstimate", Math.max(0, v));
         save();
     }
 }

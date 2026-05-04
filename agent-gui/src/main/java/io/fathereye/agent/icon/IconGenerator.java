@@ -2,9 +2,12 @@ package io.fathereye.agent.icon;
 
 import javax.imageio.ImageIO;
 import java.awt.AlphaComposite;
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.Shape;
+import java.awt.geom.AffineTransform;
 import java.awt.geom.Area;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
@@ -77,10 +80,62 @@ public final class IconGenerator {
             }
             g.setClip(null);
 
+            // Overlay: Claude's white starburst, also clipped to the
+            // apple silhouette so it can't bleed into the bite or out
+            // past the leaf. Drawn last so it sits on top of the
+            // stripes. A thin dark stroke separates the white from the
+            // bright yellow/orange bands beneath.
+            Area starburst = claudeStarburst(470, 580, 270);
+            starburst.intersect(new Area(apple));
+            g.setClip(apple);
+            g.setColor(Color.WHITE);
+            g.fill(starburst);
+            g.setColor(new Color(0x1F, 0x1F, 0x1E, 180));
+            g.setStroke(new BasicStroke(6f));
+            g.draw(starburst);
+            g.setClip(null);
+
         } finally {
             g.dispose();
         }
         return img;
+    }
+
+    /**
+     * Claude logo starburst, approximated. Four thin curved blade
+     * petals radiating from {@code (cx, cy)} at the cardinal
+     * positions (N/E/S/W), with rotational symmetry every 90°. Each
+     * blade is a tapered teardrop pointed at both the center and the
+     * outer tip — closer in proportion to Anthropic's mark than a
+     * round leaf. Width/length ratio ≈ 1:8 so the shape reads as a
+     * sharp asterisk at small icon sizes.
+     */
+    private static Area claudeStarburst(double cx, double cy, double r) {
+        Area total = new Area();
+        // Petal half-width at its widest point. Thin so 4 petals
+        // overlap into an asterisk rather than a flower.
+        double w = r * 0.085;
+        for (int i = 0; i < 4; i++) {
+            // Petal pointing right along +x. Asymmetric control points
+            // give the curved blade silhouette: leans slightly so 4 of
+            // them combined resemble Claude's pinwheel/asterisk rather
+            // than 4 plain symmetric leaves.
+            Path2D petal = new Path2D.Double();
+            petal.moveTo(0, 0);
+            petal.curveTo(r * 0.30, -w * 1.30, r * 0.65, -w * 0.85, r, 0);
+            petal.curveTo(r * 0.65,  w * 0.85, r * 0.30,  w * 1.30, 0, 0);
+            petal.closePath();
+            // Cardinal angles 0/90/180/270 (E, S, W, N) instead of the
+            // diagonal 45° offset — cardinal gives the upright + that
+            // matches Claude's logo orientation.
+            double angle = i * Math.PI / 2.0;
+            AffineTransform rotate = AffineTransform.getRotateInstance(angle, 0, 0);
+            AffineTransform translate = AffineTransform.getTranslateInstance(cx, cy);
+            Shape rotated = rotate.createTransformedShape(petal);
+            Shape placed = translate.createTransformedShape(rotated);
+            total.add(new Area(placed));
+        }
+        return total;
     }
 
     /**

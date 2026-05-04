@@ -3,6 +3,7 @@ package io.fathereye.agent.ui;
 import io.fathereye.agent.auth.Auth;
 import io.fathereye.agent.git.GitHubAuth;
 import io.fathereye.agent.prefs.AppPrefs;
+import io.fathereye.agent.sync.CloudSync;
 import io.fathereye.agent.usage.UsageStats;
 import javafx.scene.control.TextField;
 import javafx.application.Platform;
@@ -48,7 +49,7 @@ public final class SettingsDialog {
                               AppPrefs prefs,
                               Consumer<String> liveModelChange,
                               Consumer<Path> liveCwdChange,
-                              java.util.function.IntConsumer liveLimitChange) {
+                              java.util.function.LongConsumer liveEstimateChange) {
         Stage st = new Stage();
         st.initOwner(owner);
         st.initModality(Modality.WINDOW_MODAL);
@@ -72,35 +73,51 @@ public final class SettingsDialog {
         // ----- Usage
         Label usageLabel = new Label(usage == null ? "" : usage.detailedDisplay());
         usageLabel.getStyleClass().add("settings-usage");
-        // Message-limit field. Drives the sidebar progress bar -- it
-        // fills against actual messages used, not against a cost budget.
-        TextField limitField = new TextField(prefs == null ? "50"
-                : Integer.toString(prefs.messageLimit()));
-        limitField.setPrefColumnCount(6);
-        limitField.getStyleClass().add("input-area");
-        Runnable applyLimit = () -> {
+        // Token-estimate field. Drives the sidebar progress bar (used
+        // tokens / estimate) so the user can see used + ~remaining.
+        // Sensible defaults below match Anthropic's published rough
+        // numbers for each subscription tier; users tune as needed.
+        TextField estField = new TextField(prefs == null ? "1000000"
+                : Long.toString(prefs.tokenEstimate()));
+        estField.setPrefColumnCount(10);
+        estField.getStyleClass().add("input-area");
+        Runnable applyEst = () -> {
             try {
-                int v = Integer.parseInt(limitField.getText().trim());
+                long v = Long.parseLong(estField.getText().trim());
                 if (v < 0) v = 0;
-                if (prefs != null) prefs.setMessageLimit(v);
-                if (liveLimitChange != null) liveLimitChange.accept(v);
+                if (prefs != null) prefs.setTokenEstimate(v);
+                if (liveEstimateChange != null) liveEstimateChange.accept(v);
             } catch (NumberFormatException ignored) {}
         };
-        limitField.focusedProperty().addListener((obs, was, now) -> { if (!now) applyLimit.run(); });
-        limitField.setOnAction(e -> applyLimit.run());
-        Label limitHint = new Label(
-                "The sidebar progress bar fills against this — actual messages sent "
-                + "this session, not credit budget. Default 50 is in the ballpark of "
-                + "Claude Pro's per-5-hour quota. Set to 0 to hide the bar.\n\n"
-                + "(Claude.ai does not expose your real subscription quota through "
-                + "the Claude Code CLI, so this is a self-set cap rather than a true "
-                + "quota gauge.)");
-        limitHint.setWrapText(true);
-        limitHint.getStyleClass().add("settings-hint");
+        estField.focusedProperty().addListener((obs, was, now) -> { if (!now) applyEst.run(); });
+        estField.setOnAction(e -> applyEst.run());
+        // Quick-pick tier buttons -- one click sets the estimate to a
+        // sensible default for that subscription level.
+        Button proBtn = new Button("Pro (300K)");
+        proBtn.getStyleClass().add("ghost-button");
+        proBtn.setOnAction(e -> { estField.setText("300000"); applyEst.run(); });
+        Button max5Btn = new Button("Max 5× (1.5M)");
+        max5Btn.getStyleClass().add("ghost-button");
+        max5Btn.setOnAction(e -> { estField.setText("1500000"); applyEst.run(); });
+        Button max20Btn = new Button("Max 20× (6M)");
+        max20Btn.getStyleClass().add("ghost-button");
+        max20Btn.setOnAction(e -> { estField.setText("6000000"); applyEst.run(); });
+        HBox tierRow = new HBox(8, proBtn, max5Btn, max20Btn);
+        tierRow.setAlignment(Pos.CENTER_LEFT);
+        Label estHint = new Label(
+                "Sidebar bar fills against tokens-used / this estimate so you can "
+                + "eyeball how much of your subscription window you've burned. The "
+                + "Claude.ai subscription quota isn't queryable through the Claude "
+                + "Code CLI, so the numbers below are rough per-5-hour-window "
+                + "estimates. Pick the tier that matches your plan, or type your own.\n"
+                + "Set to 0 to hide the bar.");
+        estHint.setWrapText(true);
+        estHint.getStyleClass().add("settings-hint");
         VBox usageSection = section("Usage (this session)",
                 row(usageLabel, null),
-                row("Message limit", limitField),
-                row(limitHint, null));
+                row("Token estimate", estField),
+                row(tierRow, null),
+                row(estHint, null));
 
         // ----- Model
         ChoiceBox<String> modelPicker = new ChoiceBox<>();
@@ -201,6 +218,79 @@ public final class SettingsDialog {
                 row(null, ghSignInBtn),
                 row(null, ghSignOutBtn));
 
+        // ----- iCloud Sync (cross-machine session resume)
+        CloudSync cloud = new CloudSync();
+        Label syncStatus = new Label("");
+        syncStatus.setWrapText(true);
+        syncStatus.getStyleClass().add("settings-hint");
+        Button syncEnableBtn = new Button("Enable iCloud Sync");
+        syncEnableBtn.getStyleClass().add("ghost-button");
+        Button syncDisableBtn = new Button("Disable iCloud Sync");
+        syncDisableBtn.getStyleClass().add("ghost-button-danger");
+        Label syncHint = new Label(
+                "Stores your conversation list and Claude Code's session files in "
+                + "iCloud Drive instead of locally. Once iCloud finishes uploading, "
+                + "any other Mac signed into this iCloud account that runs the app "
+                + "sees the same conversations — and clicking one resumes the actual "
+                + "Claude Code session there.\n\n"
+                + "Caveats: needs iCloud Drive enabled. Concurrent edits from two "
+                + "Macs at the same time may produce iCloud conflict files. The "
+                + "session-id directories include a hash of the working directory "
+                + "path, so resuming a session needs the same path on the other Mac.");
+        syncHint.setWrapText(true);
+        syncHint.getStyleClass().add("settings-hint");
+        Runnable[] refreshSyncRef = new Runnable[1];
+        refreshSyncRef[0] = () -> {
+            CloudSync.State s = cloud.state();
+            switch (s) {
+                case ENABLED -> {
+                    syncStatus.setText("✓ iCloud Sync is on. Sync folder: " + cloud.syncFolder());
+                    syncEnableBtn.setVisible(false); syncEnableBtn.setManaged(false);
+                    syncDisableBtn.setVisible(true);  syncDisableBtn.setManaged(true);
+                }
+                case DISABLED -> {
+                    syncStatus.setText("Off. Sessions are stored locally only.");
+                    syncEnableBtn.setVisible(true);  syncEnableBtn.setManaged(true);
+                    syncDisableBtn.setVisible(false); syncDisableBtn.setManaged(false);
+                }
+                case NO_ICLOUD -> {
+                    syncStatus.setText("iCloud Drive not detected. Enable it in System Settings → Apple ID → iCloud → iCloud Drive, then reopen Settings.");
+                    syncEnableBtn.setVisible(false); syncEnableBtn.setManaged(false);
+                    syncDisableBtn.setVisible(false); syncDisableBtn.setManaged(false);
+                }
+            }
+        };
+        syncEnableBtn.setOnAction(e -> {
+            syncEnableBtn.setDisable(true);
+            syncStatus.setText("Migrating files into iCloud Drive…");
+            new Thread(() -> {
+                boolean ok = cloud.enable(line -> Platform.runLater(() ->
+                        syncStatus.setText(line)));
+                Platform.runLater(() -> {
+                    syncEnableBtn.setDisable(false);
+                    refreshSyncRef[0].run();
+                });
+            }, "cloud-enable").start();
+        });
+        syncDisableBtn.setOnAction(e -> {
+            syncDisableBtn.setDisable(true);
+            syncStatus.setText("Restoring local copies…");
+            new Thread(() -> {
+                cloud.disable(line -> Platform.runLater(() ->
+                        syncStatus.setText(line)));
+                Platform.runLater(() -> {
+                    syncDisableBtn.setDisable(false);
+                    refreshSyncRef[0].run();
+                });
+            }, "cloud-disable").start();
+        });
+        refreshSyncRef[0].run();
+        VBox syncSection = section("Cross-machine Sync (iCloud)",
+                row(syncStatus, null),
+                row(syncHint, null),
+                row(null, syncEnableBtn),
+                row(null, syncDisableBtn));
+
         // ----- Working Directory
         Label cwdLabel = new Label(currentCwd.toString());
         cwdLabel.getStyleClass().add("settings-cwd");
@@ -234,7 +324,7 @@ public final class SettingsDialog {
 
         VBox content = new VBox(18,
                 accountSection, usageSection, modelSection,
-                githubSection, cwdSection, aboutSection);
+                githubSection, syncSection, cwdSection, aboutSection);
         content.setPadding(new Insets(28, 28, 28, 28));
         content.getStyleClass().add("root");
 

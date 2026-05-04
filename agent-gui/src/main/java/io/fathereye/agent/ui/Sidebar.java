@@ -47,7 +47,7 @@ public final class Sidebar extends VBox {
     private String selectedId;
     private final ProgressBar usageBar = new ProgressBar(0);
     private final Label usageLabel = new Label("");
-    private int messageLimit = 50;
+    private long tokenEstimate = 1_000_000L;
 
     public Sidebar(ConversationStore store,
                    Consumer<Conversation> onSelect,
@@ -116,29 +116,43 @@ public final class Sidebar extends VBox {
 
     public void refresh() { Platform.runLater(this::doRefresh); }
 
-    /** Update the message limit the progress bar fills against. */
-    public void setMessageLimit(int n) { this.messageLimit = Math.max(0, n); }
+    /** Update the per-window token estimate the progress bar fills against. */
+    public void setTokenEstimate(long n) { this.tokenEstimate = Math.max(0, n); }
 
     /** Update the usage display from the latest UsageStats snapshot.
-     *  Safe to call from any thread. The bar fills against
-     *  {@code messages used / messageLimit} (i.e. direct usage), with
-     *  the running cost shown in the label as supplemental context. */
+     *  Bar fills against {@code tokens used / tokenEstimate} so the
+     *  user can eyeball "how much of my quota have I burned". The
+     *  label shows used + remaining counts and the tier the estimate
+     *  corresponds to (so it's clear what plan we're assuming). */
     public void setUsage(UsageStats stats) {
         if (stats == null) return;
-        long turns = stats.turns();
-        double frac = messageLimit <= 0 ? 0 : Math.min(1.0, turns / (double) messageLimit);
-        String text = messageLimit <= 0
-                ? String.format("%d message%s · %s tokens · $%.2f",
-                        turns, turns == 1 ? "" : "s", fmtTokens(stats.totalTokens()), stats.costUsd())
-                : String.format("%d / %d messages · %s tokens · $%.2f",
-                        turns, messageLimit, fmtTokens(stats.totalTokens()), stats.costUsd());
-        boolean over = messageLimit > 0 && turns > messageLimit;
+        long used = stats.totalTokens();
+        long remaining = Math.max(0, tokenEstimate - used);
+        double frac = tokenEstimate <= 0 ? 0 : Math.min(1.0, used / (double) tokenEstimate);
+        String text;
+        if (tokenEstimate <= 0) {
+            text = String.format("%s tokens used", fmtTokens(used));
+        } else {
+            text = String.format("%s · %s used · ~%s left",
+                    inferTier(tokenEstimate), fmtTokens(used), fmtTokens(remaining));
+        }
+        boolean over = tokenEstimate > 0 && used > tokenEstimate;
         Platform.runLater(() -> {
-            usageBar.setProgress(messageLimit <= 0 ? 0 : frac);
+            usageBar.setProgress(tokenEstimate <= 0 ? 0 : frac);
             usageLabel.setText(text);
             if (over) usageBar.getStyleClass().add("sidebar-usage-bar-over");
             else usageBar.getStyleClass().remove("sidebar-usage-bar-over");
         });
+    }
+
+    /** Map an estimate number back to the plan tier it represents. The
+     *  ranges are loose so a user who tweaks the estimate up/down
+     *  slightly still sees their plan name in the label. */
+    private static String inferTier(long est) {
+        if (est <= 500_000L)  return "Pro";
+        if (est <= 3_000_000L) return "Max 5×";
+        if (est <= 10_000_000L) return "Max 20×";
+        return "Custom";
     }
 
     private static String fmtTokens(long n) {
