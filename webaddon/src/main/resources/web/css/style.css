@@ -1,0 +1,376 @@
+/* Father Eye Web Addon — visual parity with the JavaFX panel.
+   Palette mirrors panel/src/main/java/io/fathereye/panel/view/*:
+     toolbar/topbar  #1f1f1f
+     status bar      #2b2b2b
+     body            #2a2a2a
+     card / pane     #232323
+     map background  #101010
+     border / hairline #3a3a3a
+     primary text    #cfcfcf
+     muted text      #888
+     accent text     #e0e0e0
+   Status colours:   #7ecf6f  green   excellent / OK
+                     #a8d36a  light   good
+                     #e0c060  yellow  fair / warning
+                     #e0a060  orange  poor
+                     #e07060  red     critical
+   Alert banner:     #7a5510 bg  #fff2c8 text  #b8860b border
+*/
+:root {
+    --bg-toolbar: #1f1f1f;
+    --bg-status: #2b2b2b;
+    --bg-body: #2a2a2a;
+    --bg-card: #232323;
+    --bg-map: #101010;
+    --hairline: #3a3a3a;
+    --text: #cfcfcf;
+    --text-strong: #e0e0e0;
+    --text-muted: #888;
+    --accent: #7ecf6f;
+    --warn: #e0c060;
+    --crit: #e07060;
+    --link: #88c0e0;
+    --alert-bg: #7a5510;
+    --alert-text: #fff2c8;
+    --alert-border: #b8860b;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg-body);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+}
+
+body { display: flex; flex-direction: column; min-height: 100vh; }
+
+.muted { color: var(--text-muted); }
+.small { font-size: 11px; }
+
+/* === Top bar (mirrors MainWindow toolbar #1f1f1f) ====================== */
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--hairline);
+}
+.topbar .brand {
+    color: var(--text-strong);
+    font-weight: bold;
+    padding-right: 12px;
+}
+.topbar .badges { display: flex; gap: 12px; flex: 1; flex-wrap: wrap; }
+.badge {
+    color: var(--text);
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    font-size: 12px;
+}
+.badge.muted { color: var(--text-muted); }
+.badge.ok { color: var(--accent); }
+.badge.warn { color: var(--warn); }
+.badge.crit { color: var(--crit); }
+
+.actions { display: flex; align-items: center; gap: 12px; }
+.user { font-size: 12px; }
+.link {
+    background: none;
+    border: none;
+    color: var(--link);
+    cursor: pointer;
+    font: inherit;
+    padding: 4px;
+}
+.link:hover { text-decoration: underline; }
+
+/* === Action bar (Start / Stop / Restart) =============================== */
+
+.actionbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--hairline);
+}
+.actionbar .spacer { flex: 1; }
+
+.btn {
+    background: #353535;
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    padding: 6px 14px;
+    cursor: pointer;
+    border-radius: 3px;
+    font: inherit;
+}
+.btn:hover { background: #404040; }
+.btn:active { background: #2c2c2c; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn.primary { background: #335c2f; border-color: #4d7a47; }
+.btn.primary:hover { background: #3e6e3a; }
+.btn.danger { background: #5c2f2f; border-color: #7a4747; }
+.btn.danger:hover { background: #6e3a3a; }
+
+/* === Tabs ============================================================ */
+
+.tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 16px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--hairline);
+}
+.tab {
+    background: none;
+    color: var(--text-muted);
+    border: none;
+    padding: 8px 14px;
+    cursor: pointer;
+    font: inherit;
+    border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+    color: var(--text-strong);
+    border-bottom-color: var(--accent);
+}
+
+/* === Body / panes ==================================================== */
+
+main#body {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+    background: var(--bg-body);
+}
+.pane { display: none; }
+.pane.active { display: block; }
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    flex-wrap: wrap;
+}
+.toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+
+select, input[type=text], input[type=password], input[type=number], textarea {
+    background: #1a1a1a;
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    padding: 4px 6px;
+    border-radius: 2px;
+    font: inherit;
+}
+input:focus, select:focus, textarea:focus { outline: 1px solid #5a8acc; }
+
+textarea {
+    width: 100%;
+    min-height: 240px;
+    font-family: "Menlo", "Consolas", monospace;
+    font-size: 12px;
+}
+
+/* === Tables ========================================================== */
+
+table.data {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg-card);
+}
+table.data th, table.data td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--hairline);
+    text-align: left;
+}
+table.data th {
+    background: #2a2a2a;
+    color: var(--text-strong);
+    font-weight: 600;
+}
+table.data tr:hover td { background: #2c2c2c; }
+table.data .row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* === Stats cards ===================================================== */
+
+.cards { display: flex; gap: 12px; flex-wrap: wrap; padding-bottom: 16px; }
+.card {
+    background: var(--bg-card);
+    padding: 14px 18px;
+    border-radius: 4px;
+    min-width: 120px;
+    flex: 1;
+}
+.kpi {
+    font-size: 28px;
+    font-weight: bold;
+    color: var(--text-strong);
+    font-family: "Menlo", "Consolas", monospace;
+}
+.kpi-label { color: var(--text-muted); font-size: 12px; padding-top: 4px; }
+
+.chart-host {
+    background: var(--bg-card);
+    border-radius: 4px;
+    padding: 8px;
+    height: 280px;
+}
+.chart-host canvas { width: 100%; height: 100%; }
+
+.health {
+    display: flex; gap: 16px; align-items: baseline;
+    margin-top: 12px;
+}
+.health-score {
+    font-size: 36px; font-weight: bold; color: var(--text-strong);
+}
+.health-descriptor { font-size: 14px; color: var(--text-muted); }
+
+/* === Console ========================================================= */
+
+.console {
+    background: #181818;
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    padding: 8px 10px;
+    height: calc(100vh - 240px);
+    overflow-y: auto;
+    font-family: "Menlo", "Consolas", monospace;
+    font-size: 12px;
+    color: #d8d8d8;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.console .ln { padding: 1px 0; }
+.console .ln.warn  { color: #e0c060; }
+.console .ln.error { color: #e07060; }
+.console .ln.panel { color: #88c088; }
+.console .ts { color: #666; padding-right: 6px; }
+
+.console-form {
+    display: flex;
+    gap: 8px;
+    padding-top: 8px;
+}
+.console-form input {
+    flex: 1;
+    font-family: "Menlo", "Consolas", monospace;
+}
+
+/* === Map ============================================================= */
+
+.map-host {
+    background: var(--bg-map);
+    border-radius: 3px;
+    height: calc(100vh - 220px);
+    position: relative;
+    overflow: hidden;
+}
+.map-host canvas {
+    width: 100%; height: 100%;
+    display: block;
+    cursor: grab;
+}
+.map-host canvas:active { cursor: grabbing; }
+
+/* === Config / forms ================================================== */
+
+.cred-form {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    max-width: 480px;
+}
+.cred-form label { display: flex; flex-direction: column; gap: 2px; }
+.cred-form label span { color: var(--text-muted); font-size: 12px; }
+.cred-form button { justify-self: start; }
+
+.row { display: flex; gap: 12px; align-items: center; padding-top: 8px; }
+.row.right { justify-content: flex-end; }
+
+h2 { color: var(--text-strong); font-size: 16px; padding-top: 16px; }
+
+.note { padding-bottom: 8px; }
+
+/* === Status bar ====================================================== */
+
+.statusbar {
+    background: var(--bg-status);
+    border-top: 1px solid var(--hairline);
+    padding: 6px 16px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.statusbar .status { color: var(--text); }
+
+/* === Login page ====================================================== */
+
+.login-body {
+    background: var(--bg-body);
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+}
+.login-card {
+    background: var(--bg-card);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 32px 36px;
+    width: 360px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.login-card h1 {
+    margin: 0 0 4px 0;
+    color: var(--text-strong);
+    font-size: 20px;
+}
+.login-card form { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; }
+.login-card label { display: flex; flex-direction: column; gap: 4px; }
+.login-card label span { color: var(--text-muted); font-size: 12px; }
+.login-card button[type=submit] {
+    margin-top: 6px;
+    background: #335c2f;
+    border: 1px solid #4d7a47;
+    color: var(--text-strong);
+    padding: 8px 14px;
+    border-radius: 3px;
+    cursor: pointer;
+    font: inherit;
+}
+.login-card button[type=submit]:hover { background: #3e6e3a; }
+.error {
+    color: var(--alert-text);
+    background: var(--alert-bg);
+    border: 1px solid var(--alert-border);
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+/* === Dialogs ========================================================= */
+
+dialog {
+    background: var(--bg-card);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 24px 28px;
+    max-width: 520px;
+}
+dialog::backdrop { background: rgba(0,0,0,0.55); }
+dialog h3 { margin-top: 0; color: var(--text-strong); }
+dialog form .row { padding-top: 16px; }
+dialog .field-row { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; }
+dialog .field-row span { color: var(--text-muted); font-size: 12px; }

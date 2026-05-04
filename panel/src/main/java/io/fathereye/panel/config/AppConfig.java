@@ -29,6 +29,7 @@ public final class AppConfig {
     public Bridge bridge = new Bridge();
     public History history = new History();
     public Backup backup = new Backup();
+    public WebAddon webAddon = new WebAddon();
 
     public AppConfig() {}
 
@@ -235,6 +236,39 @@ public final class AppConfig {
          *  mode). */
         public long eventLogRetentionDays = 30L;
         public History() {}
+    }
+
+    /**
+     * Web addon settings (HTTPS remote-control panel).
+     *
+     * <p>The actual credential hash is stored in a separate
+     * {@code webaddon.json} file with mode {@code 0600} so it never
+     * appears in this config. Only operational toggles (enabled, port,
+     * bind address) live here.
+     */
+    public static final class WebAddon {
+        /** Master switch. Defaults off; the user enables via the
+         *  Web Access tab once they've set a username and password. */
+        public boolean enabled = false;
+        /** TCP port to bind. Default 8443 (TLS). */
+        public int port = 8443;
+        /** Bind address. Default 0.0.0.0 so the addon is reachable
+         *  from any interface (LAN + WAN port-forward). Operators
+         *  who want LAN-only can change this to 127.0.0.1 or a
+         *  specific LAN IP. */
+        public String bindAddress = "0.0.0.0";
+        /** Idle session timeout in minutes. The session cookie is
+         *  rotated on every login; this caps how long a session
+         *  remains valid without activity. */
+        public int sessionIdleMinutes = 480;
+        /** Per-IP login attempts allowed in {@link #loginThrottleWindowMinutes}
+         *  before the IP is locked out. Brute-force defense. */
+        public int loginThrottleAttempts = 5;
+        public int loginThrottleWindowMinutes = 15;
+        /** Lockout duration in minutes once an IP has burned through
+         *  its throttle budget. */
+        public int loginLockoutMinutes = 60;
+        public WebAddon() {}
     }
 
     public static final class Backup {

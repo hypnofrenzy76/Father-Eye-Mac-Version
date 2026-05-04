@@ -10,6 +10,7 @@ This repo is a Mac-focused fork of [hypnofrenzy76/father-eye](https://github.com
 - **bridge** — unchanged from upstream for now. Ships as a Forge mod that goes into `<server>/mods/`. Future: relax the marker-file location so cross-machine (Mac panel ↔ remote bridge) is a first-class config option.
 - **map** — unchanged from upstream.
 - **panel** — the active port target. Initial fork point: upstream **0.2.9** (commit `9942794`). Mac-specific divergence starts here.
+- **webaddon** — Mac-fork addition. Optional HTTPS panel that runs inside the JavaFX panel's JVM and exposes login-gated browser access to every panel feature (start/stop/restart, console, players, mobs, mods, stats, map, config). Recommended deployment is **Tailscale** for zero-port-forward WAN access. See [webaddon/README.md](webaddon/README.md).
 
 ## Prerequisites
 
@@ -78,6 +79,7 @@ This fork tracks upstream cherry-picks where they apply, but diverges in:
 - **Build pipeline**: Mac-only EXE / DMG via jpackage. No C# launcher (Windows-only).
 - **Watchdog / launcher**: the Win32 Job Object lifecycle (Pnl-51 in upstream) is a no-op on Mac. A future commit will replace it with a POSIX equivalent or a conscious "remote bridge only, no local launch" mode.
 - **Default target**: monitoring a remote Forge server, not launching a local one.
+- **Web addon**: a separate `webaddon` module provides a TLS-secured HTML panel reachable from any browser on your Tailscale tailnet (or any other deployment of your choice). Disabled by default; flip `webAddon.enabled` in `config.json` to turn it on. Single-user authentication, BCrypt-hashed credentials, brute-force throttle, security headers, full feature parity with the desktop panel.
 
 ## See also
 

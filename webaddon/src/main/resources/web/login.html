@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Father Eye Web Addon — Sign in</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="login-body">
+<main class="login-card">
+    <h1>Father Eye</h1>
+    <p class="muted">Web Addon — sign in to continue.</p>
+    <form id="loginForm" autocomplete="on">
+        <label>
+            <span>Username</span>
+            <input type="text" name="username" id="username" autocomplete="username" required autofocus>
+        </label>
+        <label>
+            <span>Password</span>
+            <input type="password" name="password" id="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" id="submit">Sign in</button>
+        <div id="error" class="error" hidden></div>
+    </form>
+    <p class="muted small">Single-user panel. Set credentials in the desktop Father Eye panel's <strong>Web Access</strong> tab.</p>
+</main>
+<script src="/static/js/login.js"></script>
+</body>
+</html>

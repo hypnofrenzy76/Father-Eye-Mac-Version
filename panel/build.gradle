@@ -36,6 +36,14 @@ javafx {
 dependencies {
     implementation project(':mapcore')
 
+    // Web addon (HTTPS / login / REST / WebSocket remote-control panel).
+    // Loaded via ServiceLoader on the runtime classpath; the panel's
+    // own code references it only through io.fathereye.panel.addon.*
+    // SPI types so the web addon stays optional. To disable it,
+    // remove the resulting jar from the install lib directory and
+    // restart the panel.
+    runtimeOnly project(':webaddon')
+
     implementation "net.java.dev.jna:jna-platform:${jnaVersion}"
     implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
     implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:${jacksonVersion}"
@@ -111,6 +119,13 @@ def fePanelJdkModules = [
         // copy; must include java.datatransfer or the runtime image
         // throws ClassNotFoundException on first chart-context-menu open.
         'java.datatransfer',
+        // Web addon (Javalin 6 / Jetty 11) also wants:
+        //   - java.security.sasl: Jetty's auth subsystem opportunistically
+        //     loads SASL even though we never use it; absent module ->
+        //     ClassNotFoundException at first https connect.
+        //   - jdk.httpserver: Javalin's static-file utility shells out to
+        //     com.sun.net.httpserver in some failure paths.
+        'java.security.sasl', 'jdk.httpserver',
         'jdk.unsupported', 'jdk.crypto.ec', 'jdk.crypto.cryptoki',
         'jdk.naming.dns', 'jdk.localedata'
 ].join(',')

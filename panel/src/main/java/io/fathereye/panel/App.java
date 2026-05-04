@@ -1,5 +1,7 @@
 package io.fathereye.panel;
 
+import io.fathereye.panel.addon.PanelAddon;
+import io.fathereye.panel.addon.PanelContext;
 import io.fathereye.panel.ipc.MarkerDiscovery;
 import io.fathereye.panel.ipc.PipeClient;
 import io.fathereye.panel.ipc.PipeReader;
@@ -16,10 +18,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public final class App extends Application {
 
@@ -88,6 +94,11 @@ public final class App extends Application {
     /** Pnl-36: ms-since-epoch of the most recent ServerLauncher.start();
      *  bookend for the session evaluation report on shutdown. */
     private volatile long sessionStartMs = 0L;
+
+    /** Loaded {@link PanelAddon} instances. Currently the only built-in
+     *  addon is the web access addon (HTTPS + login + REST + WebSocket).
+     *  Resolved via {@link ServiceLoader} in {@link #bootstrapAddons()}. */
+    private final List<PanelAddon> addons = new ArrayList<>();
 
     @Override
     public void start(Stage stage) {
@@ -278,6 +289,68 @@ public final class App extends Application {
         Thread connectThread = new Thread(this::tryConnect, "FatherEye-Connect");
         connectThread.setDaemon(true);
         connectThread.start();
+
+        // Boot any optional PanelAddon instances on the classpath. The
+        // panel core continues even if every addon fails to start --
+        // addons must catch their own exceptions and log them.
+        bootstrapAddons();
+    }
+
+    /**
+     * Discover and start every {@link PanelAddon} on the classpath.
+     * The web addon (module {@code webaddon}) registers itself via
+     * {@code META-INF/services/io.fathereye.panel.addon.PanelAddon};
+     * other addons can be added the same way without modifying this
+     * file.
+     */
+    private void bootstrapAddons() {
+        try {
+            ServiceLoader<PanelAddon> sl = ServiceLoader.load(PanelAddon.class, App.class.getClassLoader());
+            PanelContext ctx = new AppPanelContext();
+            for (PanelAddon addon : sl) {
+                try {
+                    LOG.info("Starting panel addon: {}", addon.id());
+                    addon.start(ctx);
+                    addons.add(addon);
+                } catch (Throwable t) {
+                    LOG.warn("Panel addon {} failed to start: {}", addon.id(), t.getMessage(), t);
+                }
+            }
+            if (addons.isEmpty()) {
+                LOG.info("No panel addons registered.");
+            }
+        } catch (Throwable t) {
+            LOG.warn("ServiceLoader scan for PanelAddon failed: {}", t.getMessage(), t);
+        }
+    }
+
+    /**
+     * Pass-through implementation of {@link PanelContext} that hands
+     * addons live references to the panel's launcher / config /
+     * dispatcher / pipeClient. Addons treat {@code pipeClient()} as
+     * possibly null and re-fetch on every use.
+     */
+    private final class AppPanelContext implements PanelContext {
+        @Override public io.fathereye.panel.config.AppConfig appConfig() { return appConfig; }
+        @Override public void saveConfig() {
+            try { appConfig.save(io.fathereye.panel.config.AppConfig.defaultPath()); }
+            catch (IOException ioe) { LOG.warn("addon saveConfig failed: {}", ioe.getMessage()); }
+        }
+        @Override public ServerLauncher launcher() { return launcher; }
+        @Override public PipeClient pipeClient() { return pipeClient; }
+        @Override public TopicDispatcher dispatcher() { return dispatcher; }
+        @Override public void onTopicSnapshot(String topic, Consumer<com.fasterxml.jackson.databind.JsonNode> tap) {
+            dispatcher.addSnapshotTap(topic, tap);
+        }
+        @Override public void onTopicEvent(String topic, Consumer<com.fasterxml.jackson.databind.JsonNode> tap) {
+            dispatcher.addEventTap(topic, tap);
+        }
+        @Override public void status(String message) { update(message); }
+        @Override public void log(String message) {
+            if (mainWindow != null) {
+                Platform.runLater(() -> mainWindow.consolePane().onLogLine(asSyntheticLogLineNode(message)));
+            }
+        }
     }
 
     /**
@@ -651,6 +724,13 @@ public final class App extends Application {
     @Override
     public void stop() {
         LOG.info("Father Eye panel shutting down");
+        // Stop addons first so any HTTP listeners they own release
+        // their sockets before the rest of the panel shuts down.
+        for (PanelAddon addon : addons) {
+            try { addon.stop(); }
+            catch (Throwable t) { LOG.warn("Panel addon {} stop failed: {}", addon.id(), t.getMessage()); }
+        }
+        addons.clear();
         if (restartScheduler != null) restartScheduler.stop();
         // Pnl-54 (audit fix): graceful shutdown ordering. shutdown()
         // first stops accepting new tasks but lets in-flight backup

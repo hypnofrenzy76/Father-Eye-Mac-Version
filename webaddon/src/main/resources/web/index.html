@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Father Eye Web Addon</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<header id="topbar" class="topbar">
+    <div class="brand">Father Eye</div>
+    <div class="badges">
+        <span id="serverState" class="badge">Server: --</span>
+        <span id="heartbeat" class="badge muted">Heartbeat: --</span>
+        <span id="uptime" class="badge muted">Uptime: --</span>
+    </div>
+    <div class="actions">
+        <span id="userTag" class="user muted"></span>
+        <button id="logoutBtn" class="link">Sign out</button>
+    </div>
+</header>
+
+<nav id="actionbar" class="actionbar">
+    <button id="btnStart" class="btn">Start</button>
+    <button id="btnStop" class="btn">Stop</button>
+    <button id="btnRestart" class="btn">Restart</button>
+    <span class="spacer"></span>
+    <span id="connState" class="badge muted">Web socket: connecting…</span>
+</nav>
+
+<nav id="tabs" class="tabs">
+    <button class="tab active" data-tab="map">Map</button>
+    <button class="tab" data-tab="players">Players</button>
+    <button class="tab" data-tab="mobs">Mobs</button>
+    <button class="tab" data-tab="mods">Mods</button>
+    <button class="tab" data-tab="stats">Stats</button>
+    <button class="tab" data-tab="console">Console</button>
+    <button class="tab" data-tab="config">Config</button>
+</nav>
+
+<main id="body">
+    <section data-pane="map" class="pane active">
+        <div class="toolbar">
+            <label>Dimension
+                <select id="mapDim">
+                    <option value="minecraft:overworld">overworld</option>
+                    <option value="minecraft:the_nether">the_nether</option>
+                    <option value="minecraft:the_end">the_end</option>
+                </select>
+            </label>
+            <span id="mapStatus" class="muted">No tile data yet.</span>
+        </div>
+        <div class="map-host"><canvas id="mapCanvas"></canvas></div>
+    </section>
+
+    <section data-pane="players" class="pane">
+        <div class="toolbar">
+            <span id="playerCount" class="muted">No players online.</span>
+        </div>
+        <table id="playersTable" class="data">
+            <thead><tr><th>Name</th><th>Dim</th><th>X</th><th>Y</th><th>Z</th><th>Ping</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </section>
+
+    <section data-pane="mobs" class="pane">
+        <div class="toolbar">
+            <span id="mobCount" class="muted">No mobs reported.</span>
+            <span class="spacer"></span>
+            <button id="btnClearArea" class="btn small">Clear hostile mobs in area…</button>
+        </div>
+        <table id="mobsTable" class="data">
+            <thead><tr><th>Type</th><th>Dim</th><th>Count</th><th>Hostile</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </section>
+
+    <section data-pane="mods" class="pane">
+        <p class="muted note">Mod tick share. Bars are coloured the same as the desktop panel: green = under 1%, red = critical.</p>
+        <table id="modsTable" class="data">
+            <thead><tr><th>Mod</th><th>Tick share</th><th>%</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </section>
+
+    <section data-pane="stats" class="pane">
+        <div class="cards">
+            <div class="card"><div class="kpi" id="kpiTps">--</div><div class="kpi-label">TPS</div></div>
+            <div class="card"><div class="kpi" id="kpiMspt">--</div><div class="kpi-label">MSPT</div></div>
+            <div class="card"><div class="kpi" id="kpiHeap">--</div><div class="kpi-label">Heap %</div></div>
+            <div class="card"><div class="kpi" id="kpiPlayers">--</div><div class="kpi-label">Players</div></div>
+        </div>
+        <div class="chart-host"><canvas id="tpsChart"></canvas></div>
+        <div id="healthBox" class="card health">
+            <div id="healthScore" class="health-score">--</div>
+            <div id="healthDescriptor" class="health-descriptor">awaiting data</div>
+        </div>
+    </section>
+
+    <section data-pane="console" class="pane">
+        <div id="consoleLog" class="console"></div>
+        <form id="consoleForm" class="console-form">
+            <input type="text" id="consoleInput" placeholder="Type a command and press Enter (e.g. /say hello)" autocomplete="off">
+            <button type="submit" class="btn">Send</button>
+        </form>
+    </section>
+
+    <section data-pane="config" class="pane">
+        <h2>Application config</h2>
+        <p class="muted">Edits write back to the panel's config.json. Restart the panel to fully apply changes.</p>
+        <textarea id="configJson" spellcheck="false"></textarea>
+        <div class="row">
+            <button id="btnSaveConfig" class="btn">Save config</button>
+            <span id="configMsg" class="muted"></span>
+        </div>
+
+        <h2>Web access credentials</h2>
+        <p class="muted">Change the username or password used to sign in to this web addon.</p>
+        <form id="credForm" class="cred-form">
+            <label>Current password
+                <input type="password" id="credCurrent" autocomplete="current-password">
+            </label>
+            <label>New username
+                <input type="text" id="credUsername" autocomplete="username">
+            </label>
+            <label>New password (8+ chars)
+                <input type="password" id="credNewPassword" autocomplete="new-password">
+            </label>
+            <button type="submit" class="btn">Update credentials</button>
+            <span id="credMsg" class="muted"></span>
+        </form>
+    </section>
+</main>
+
+<footer id="statusbar" class="statusbar">
+    <span id="status" class="status">Idle.</span>
+</footer>
+
+<dialog id="confirmDialog">
+    <form method="dialog">
+        <h3 id="confirmTitle">Confirm</h3>
+        <p id="confirmBody"></p>
+        <div class="row right">
+            <button value="cancel" class="btn">Cancel</button>
+            <button value="ok" class="btn primary">OK</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="actionDialog">
+    <form method="dialog" id="actionForm">
+        <h3 id="actionTitle">Action</h3>
+        <div id="actionBody"></div>
+        <div class="row right">
+            <button value="cancel" class="btn">Cancel</button>
+            <button value="ok" class="btn primary">OK</button>
+        </div>
+    </form>
+</dialog>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/ws.js"></script>
+<script src="/static/js/views/console.js"></script>
+<script src="/static/js/views/players.js"></script>
+<script src="/static/js/views/mobs.js"></script>
+<script src="/static/js/views/mods.js"></script>
+<script src="/static/js/views/stats.js"></script>
+<script src="/static/js/views/map.js"></script>
+<script src="/static/js/views/config.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

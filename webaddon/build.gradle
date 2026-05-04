@@ -1,0 +1,47 @@
+plugins {
+    id 'java'
+}
+
+version = project.findProperty('webaddonVersion') ?: '0.1.0-mac.1'
+archivesBaseName = 'fathereye-webaddon'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // The web addon depends on panel for PanelAddon SPI + types it
+    // bridges into (PipeClient, ServerLauncher, BackupService,
+    // AppConfig). Panel pulls webaddon back in via runtimeOnly so
+    // the ServiceLoader find succeeds at jpackage runtime; that
+    // direction does not introduce a cycle because compileOnly +
+    // runtimeOnly resolve at different phases.
+    compileOnly project(':panel')
+
+    // Javalin 6.x: embedded Jetty 11, HTTP + WebSocket. Kotlin stdlib
+    // and jakarta servlet API arrive transitively; both run on JDK 17.
+    implementation "io.javalin:javalin:${javalinVersion}"
+
+    // BCrypt password hashing. Pure-Java, no native deps.
+    implementation "at.favre.lib:bcrypt:${bcryptVersion}"
+
+    // Already pulled in transitively but pin to keep the panel /
+    // webaddon Jackson versions in lockstep so JSON nodes pass
+    // between modules without classpath drift.
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly  "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
