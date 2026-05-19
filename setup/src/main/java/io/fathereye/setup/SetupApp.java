@@ -137,7 +137,7 @@ public final class SetupApp extends Application {
                 "the button below to open Adoptium's download page; after " +
                 "installing, return here and click Re-check. The optional " +
                 "JDK 17 row below is informational — even if it shows " +
-                '"Not found", the panel still runs because its app bundle ' +
+                "\"Not found\", the panel still runs because its app bundle " +
                 "includes its own JDK 17.");
         body.setWrapText(true);
 
