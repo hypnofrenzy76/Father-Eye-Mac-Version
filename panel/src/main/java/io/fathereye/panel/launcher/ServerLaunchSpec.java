@@ -39,8 +39,8 @@ public final class ServerLaunchSpec {
      * Setup wizard succeeds, so we never try to launch an empty path.
      *
      * <p>JVM args mirror Aikar's recommended Forge 1.16.5 G1GC tuning
-     * (https://aikar.co/mcflags.html), adapted for a 32 GB Mac with
-     * a 12 GB heap. The Setup wizard rewrites these into
+     * (https://aikar.co/mcflags.html), large-heap variant (>12 GB)
+     * with a 16 GB heap. The Setup wizard rewrites these into
      * {@code <serverDir>/user_jvm_args.txt} so Forge's
      * {@code run.sh} picks them up.
      */
@@ -50,25 +50,27 @@ public final class ServerLaunchSpec {
                 Paths.get(home, "Minecraft Server"),
                 "",  // empty -> use $JAVA_HOME/bin/java or PATH
                 Arrays.asList(
-                        "-Xms8G", "-Xmx12G",
+                        "-Xms16G", "-Xmx16G",
                         "-XX:+UseG1GC",
                         "-XX:+ParallelRefProcEnabled",
                         "-XX:MaxGCPauseMillis=200",
                         "-XX:+UnlockExperimentalVMOptions",
                         "-XX:+DisableExplicitGC",
                         "-XX:+AlwaysPreTouch",
-                        "-XX:G1NewSizePercent=30",
-                        "-XX:G1MaxNewSizePercent=40",
-                        "-XX:G1HeapRegionSize=8M",
-                        "-XX:G1ReservePercent=20",
+                        "-XX:G1NewSizePercent=40",
+                        "-XX:G1MaxNewSizePercent=50",
+                        "-XX:G1HeapRegionSize=16M",
+                        "-XX:G1ReservePercent=15",
                         "-XX:G1HeapWastePercent=5",
                         "-XX:G1MixedGCCountTarget=4",
-                        "-XX:InitiatingHeapOccupancyPercent=15",
+                        "-XX:InitiatingHeapOccupancyPercent=20",
                         "-XX:G1MixedGCLiveThresholdPercent=90",
                         "-XX:G1RSetUpdatingPauseTimePercent=5",
                         "-XX:SurvivorRatio=32",
                         "-XX:+PerfDisableSharedMem",
-                        "-XX:MaxTenuringThreshold=1"
+                        "-XX:MaxTenuringThreshold=1",
+                        "-Dusing.aikars.flags=https://mcflags.emc.gs",
+                        "-Daikars.new.flags=true"
                 ),
                 "forge-1.16.5-36.2.39.jar",
                 Collections.singletonList("nogui")

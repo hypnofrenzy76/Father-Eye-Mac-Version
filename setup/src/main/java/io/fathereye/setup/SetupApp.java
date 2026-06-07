@@ -438,7 +438,16 @@ public final class SetupApp extends Application {
         run.append("#!/usr/bin/env bash\n");
         run.append("cd \"$(dirname \"$0\")\"\n");
         run.append("exec \"").append(jdk8Path == null ? "java" : jdk8Path).append("\" \\\n");
-        run.append("    -Xms8G -Xmx12G \\\n");
+        run.append("    -Xms16G -Xmx16G \\\n");
+        run.append("    -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 \\\n");
+        run.append("    -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch \\\n");
+        run.append("    -XX:G1NewSizePercent=40 -XX:G1MaxNewSizePercent=50 \\\n");
+        run.append("    -XX:G1HeapRegionSize=16M -XX:G1ReservePercent=15 \\\n");
+        run.append("    -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 \\\n");
+        run.append("    -XX:InitiatingHeapOccupancyPercent=20 -XX:G1MixedGCLiveThresholdPercent=90 \\\n");
+        run.append("    -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 \\\n");
+        run.append("    -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 \\\n");
+        run.append("    -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true \\\n");
         run.append("    -jar forge-").append(FORGE_VERSION).append(".jar nogui \"$@\"\n");
         Files.write(runSh, run.toString().getBytes());
         try {
@@ -462,7 +471,18 @@ public final class SetupApp extends Application {
         Map<String, Object> serverRuntime = new LinkedHashMap<>();
         serverRuntime.put("workingDir", serverDir.toString().replace('\\', '/'));
         serverRuntime.put("javaPath", jdk8Path == null ? "" : jdk8Path);
-        serverRuntime.put("jvmArgs", "-Xms8G -Xmx12G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200");
+        serverRuntime.put("jvmArgs",
+                "-Xms16G -Xmx16G -XX:+UseG1GC -XX:+ParallelRefProcEnabled "
+                + "-XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions "
+                + "-XX:+DisableExplicitGC -XX:+AlwaysPreTouch "
+                + "-XX:G1NewSizePercent=40 -XX:G1MaxNewSizePercent=50 "
+                + "-XX:G1HeapRegionSize=16M -XX:G1ReservePercent=15 "
+                + "-XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 "
+                + "-XX:InitiatingHeapOccupancyPercent=20 "
+                + "-XX:G1MixedGCLiveThresholdPercent=90 "
+                + "-XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 "
+                + "-XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 "
+                + "-Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true");
         serverRuntime.put("jarName", "forge-" + FORGE_VERSION + ".jar");
         serverRuntime.put("mainArgs", "nogui");
         serverRuntime.put("autoStart", true);
