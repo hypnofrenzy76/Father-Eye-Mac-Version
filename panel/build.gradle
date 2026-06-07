@@ -159,7 +159,7 @@ tasks.register('jpackageMacApp') {
         if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
 
         // jpackage rejects an app-version starting with 0 ("first number
-        // cannot be zero"). 0.3.0-mac.1 -> 1.3.0 for bundle metadata.
+        // cannot be zero"). 0.3.1-mac.1 -> 1.3.1 for bundle metadata.
         def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
 
         def cmd = [
@@ -244,14 +244,14 @@ tasks.register('jpackageMacDmg') {
 }
 
 // jpackage's --app-version validator rejects '0.x.y' bundle versions on
-// macOS. Map our 0.3.0-mac.N to 1.3.0 so the bundle's CFBundleShortVersion
+// macOS. Map our 0.x.y-mac.N to 1.x.y so the bundle's CFBundleShortVersion
 // is plausible. This affects ONLY the bundle metadata Finder reads; the
 // in-app VERSION constant in App.java remains the canonical project
-// version (0.3.0-mac.N), which is what gets logged + handshaken with the
-// bridge.
+// version (0.3.1-mac.N from 2026-06-07 onward), which is what gets logged
+// + handshaken with the bridge.
 String projectVersionToMacBundleVersion(String v) {
     if (v.startsWith('0.')) {
-        // 0.3.0-mac.1 -> '0.3.0-mac.1'.substring(2) = '3.0-mac.1'
+        // 0.3.1-mac.1 -> '0.3.1-mac.1'.substring(2) = '3.1-mac.1'
         // strip the trailing -mac.N suffix for plain numeric semver.
         String tail = v.substring(2)
         int dash = tail.indexOf('-')

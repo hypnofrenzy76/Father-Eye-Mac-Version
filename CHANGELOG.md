@@ -2,6 +2,36 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-07 — version unification
+
+Maintainer directive: unify all four artifact versions for clarity.
+
+- `mapcoreVersion`, `bridgeVersion`, `panelVersion`, `mapVersion` all
+  set to **`0.3.1-mac.1`** in `gradle.properties`. Going forward the
+  four artifacts share a single version line and should bump
+  together; per-artifact divergence requires an explicit note in
+  `gradle.properties`.
+- Hardcoded version strings updated to match:
+  - `bridge/.../util/Constants.java::BRIDGE_VERSION`
+  - `panel/.../App.java::VERSION`
+  - `panel/.../view/PlayerHeadCache.java` User-Agent header
+  - `mapcore/.../api/MapCore.java::VERSION`
+  - `mapcore/.../api/MapCoreTest.java` assertion
+  - `setup/build.gradle` fallback defaults for `panelVersion`
+    and `bridgeVersion` (the embedBridgeJar copy task)
+- `docs/mapcore-api-contract.md` and `map/docs/HANDOFF.md` pin
+  updated; API surface is unchanged so `CONTRACT_MAJOR=0` /
+  `CONTRACT_MINOR=2` deliberately do NOT move.
+- Forge `mods.toml` files use `${file.jarVersion}` — no edits
+  needed; the version flows automatically from gradle.
+- `local-maven/io/fathereye/mapcore/0.2.0/**` artifacts are left
+  in place; consumers that previously pinned to `0.2.0` can
+  continue to resolve. The new `0.3.1-mac.1` mapcore JAR will
+  be republished into `local-maven/` on the next
+  `:mapcore:publishMapcorePublicationToLocalMavenRepository`
+  run (or it will materialize via `project(':mapcore')` direct
+  dependency at build time).
+
 ## 2026-04-29 (continued — full Mac compatibility pass)
 
 After the initial fork commit, applied a comprehensive Mac-compatibility

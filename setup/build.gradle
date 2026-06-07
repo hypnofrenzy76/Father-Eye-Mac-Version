@@ -4,7 +4,7 @@ plugins {
     id 'org.openjfx.javafxplugin' version '0.1.0'
 }
 
-version = project.findProperty('panelVersion') ?: '0.3.0-mac.1'
+version = project.findProperty('panelVersion') ?: '0.3.1-mac.1'
 archivesBaseName = 'fathereye-setup'
 
 java {
@@ -41,7 +41,7 @@ dependencies {
 // :setup:jpackageMacApp; the bridge build is implicit.
 tasks.register('embedBridgeJar', Copy) {
     dependsOn ':bridge:shadowJar'
-    def bridgeVer = project.findProperty('bridgeVersion') ?: '0.2.9'
+    def bridgeVer = project.findProperty('bridgeVersion') ?: '0.3.1-mac.1'
     from "${rootProject.projectDir}/bridge/build/libs/fathereye-bridge-${bridgeVer}.jar"
     into "${projectDir}/src/main/resources"
     rename { 'fathereye-bridge-bundle.jar' }

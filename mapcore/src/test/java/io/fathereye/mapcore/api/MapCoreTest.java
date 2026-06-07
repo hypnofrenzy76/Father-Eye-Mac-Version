@@ -16,7 +16,7 @@ class MapCoreTest {
 
     @Test
     void versionIsSemverPinned() {
-        assertEquals("0.2.0", MapCore.VERSION);
+        assertEquals("0.3.1-mac.1", MapCore.VERSION);
         assertEquals(0, MapCore.CONTRACT_MAJOR);
         assertEquals(2, MapCore.CONTRACT_MINOR);
     }

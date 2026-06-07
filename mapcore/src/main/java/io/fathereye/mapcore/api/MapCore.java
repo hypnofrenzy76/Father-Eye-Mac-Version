@@ -8,8 +8,12 @@ import io.fathereye.mapcore.internal.NoOpMapRenderer;
  */
 public final class MapCore {
 
-    /** Library version. Consumers pin to an exact value (no ranges). */
-    public static final String VERSION = "0.2.0";
+    /** Library version. Consumers pin to an exact value (no ranges).
+     *  2026-06-07: jumped 0.2.0 -> 0.3.1-mac.1 to align with the
+     *  unified Father Eye Mac version line. CONTRACT_MAJOR / CONTRACT_MINOR
+     *  below are a SEPARATE wire-protocol number and intentionally do
+     *  not move with the artifact version. */
+    public static final String VERSION = "0.3.1-mac.1";
 
     /** Wire-protocol version for any data contracts that depend on this library. */
     public static final int CONTRACT_MAJOR = 0;
