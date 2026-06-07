@@ -2,6 +2,9 @@ package io.fathereye.setup;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import javafx.animation.Animation;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
@@ -14,6 +17,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +27,7 @@ import java.net.URLConnection;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Father Eye Setup wizard (Mac fork).
@@ -85,6 +90,29 @@ public final class SetupApp extends Application {
     private String jdk17Path;
     private int serverPort = 25566;
 
+    /** ---- UI log batching (Mac fork bugfix 2026-06-07) -----------------
+     *
+     * The Forge installer prints ~30k+ "Patching ..." lines to stdout.
+     * The previous implementation called {@link Platform#runLater} +
+     * {@code logArea.appendText} for every single line, which on the
+     * Mid 2011 iMac with the AMD HD 6750M saturated the JavaFX event
+     * queue and froze the UI for minutes after the worker thread had
+     * already finished. Symptom: progress bar stuck spinning, Setup.app
+     * pegged at 99% CPU, but {@code forge-installer.jar.log} on disk
+     * says "The server installed successfully".
+     *
+     * Fix: producer threads enqueue lines into a lock-free queue; a
+     * single Timeline running on the FX thread at 10 Hz drains the
+     * queue, concatenates into one StringBuilder, and does ONE
+     * {@code appendText} per tick. We also cap the TextArea contents
+     * at {@link #LOG_MAX_CHARS} so the underlying RichText layout
+     * cost stays bounded regardless of installer log volume.
+     * ------------------------------------------------------------------ */
+    private static final int LOG_MAX_CHARS = 20_000;
+    private static final int LOG_FLUSH_HZ = 10;
+    private final ConcurrentLinkedQueue<String> logQueue = new ConcurrentLinkedQueue<>();
+    private Timeline logPump;
+
     @Override
     public void start(Stage primary) {
         this.stage = primary;
@@ -99,7 +127,64 @@ public final class SetupApp extends Application {
         } catch (IOException e) {
             LOG.warn("could not pre-create appdata: {}", e.getMessage());
         }
+        startLogPump();
         showWelcome();
+    }
+
+    @Override
+    public void stop() {
+        if (logPump != null) {
+            try { logPump.stop(); } catch (Throwable ignored) {}
+        }
+    }
+
+    // ---- batched UI log appender (see fields above) ---------------------
+
+    private void startLogPump() {
+        // Single Timeline owned by the FX thread. Idle ticks (empty
+        // queue) cost a queue.poll() == null branch and exit; the cost
+        // is negligible compared to the per-line runLater storm we used
+        // to do.
+        logPump = new Timeline(new KeyFrame(
+                Duration.millis(1000.0 / LOG_FLUSH_HZ),
+                e -> flushLog()));
+        logPump.setCycleCount(Animation.INDEFINITE);
+        logPump.play();
+    }
+
+    /** Producer-side: append from any thread. O(1) lock-free enqueue. */
+    private void enqueueLog(String line) {
+        logQueue.offer(line);
+    }
+
+    /** Consumer-side: runs on FX thread, drains the queue in one batch. */
+    private void flushLog() {
+        if (logQueue.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        String s;
+        // Cap a single flush to keep the FX tick bounded even if a flood
+        // arrives (e.g. installer prints 10k lines in one second). The
+        // remainder is picked up on the next tick.
+        int budget = 2000;
+        while (budget-- > 0 && (s = logQueue.poll()) != null) {
+            sb.append(s);
+            if (!s.endsWith("\n")) sb.append('\n');
+        }
+        if (sb.length() == 0) return;
+        logArea.appendText(sb.toString());
+        // Cap total content so TextArea layout cost stays bounded. We
+        // keep the tail (most recent lines) because the user looks at
+        // those during install. Cheap substring rebuild beats letting
+        // the underlying RichText accumulate megabytes.
+        String text = logArea.getText();
+        if (text.length() > LOG_MAX_CHARS) {
+            int from = text.length() - LOG_MAX_CHARS;
+            // Snap to the next newline so we don't cut a line in half.
+            int nl = text.indexOf('\n', from);
+            if (nl < 0 || nl > from + 512) nl = from;
+            logArea.setText("[... older output trimmed ...]\n" + text.substring(nl + 1));
+            logArea.positionCaret(logArea.getText().length());
+        }
     }
 
     // ---- pages ----------------------------------------------------------
@@ -292,10 +377,12 @@ public final class SetupApp extends Application {
                 return null;
             }
             private void step(String s) {
-                Platform.runLater(() -> {
-                    status.setText(s);
-                    logArea.appendText("[" + java.time.LocalTime.now().withNano(0) + "] " + s + "\n");
-                });
+                // Status label still updates synchronously via runLater
+                // (one call per step, ~6 total — no flood). Log line goes
+                // through the batched pump so it merges with any installer
+                // output already queued from runForgeInstaller.
+                Platform.runLater(() -> status.setText(s));
+                enqueueLog("[" + java.time.LocalTime.now().withNano(0) + "] " + s);
             }
         };
         task.setOnSucceeded(e -> showDone());
@@ -389,8 +476,12 @@ public final class SetupApp extends Application {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;
                 while ((line = r.readLine()) != null) {
-                    final String l = line;
-                    Platform.runLater(() -> logArea.appendText("    " + l + "\n"));
+                    // Mac fork bugfix (2026-06-07): enqueue, do NOT
+                    // Platform.runLater per line. Forge prints ~30k
+                    // "Patching ..." lines and the previous per-line
+                    // runLater flood froze the FX thread for minutes.
+                    // The 10 Hz batched pump drains the queue safely.
+                    enqueueLog("    " + line);
                 }
             }
             int code = p.waitFor();
