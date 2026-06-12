@@ -159,7 +159,7 @@ tasks.register('jpackageMacApp') {
         if (mainJar == null) throw new GradleException("Main jar not found in ${libDir}")
 
         // jpackage rejects an app-version starting with 0 ("first number
-        // cannot be zero"). 0.3.1-mac.1 -> 1.3.1 for bundle metadata.
+        // cannot be zero"). 0.3.2-mac.1 -> 1.3.2 for bundle metadata.
         def macAppVersion = projectVersionToMacBundleVersion(project.version.toString())
 
         def cmd = [
@@ -284,7 +284,7 @@ tasks.register('jpackageMacDmg') {
 // + handshaken with the bridge.
 String projectVersionToMacBundleVersion(String v) {
     if (v.startsWith('0.')) {
-        // 0.3.1-mac.1 -> '0.3.1-mac.1'.substring(2) = '3.1-mac.1'
+        // 0.3.2-mac.1 -> '0.3.2-mac.1'.substring(2) = '3.2-mac.1'
         // strip the trailing -mac.N suffix for plain numeric semver.
         String tail = v.substring(2)
         int dash = tail.indexOf('-')

@@ -165,10 +165,18 @@ public final class TickStateMirror {
         return m == null ? null : m.chunks;
     }
 
-    /** Called from the IPC thread on a chunk_tile cache miss. */
+    /** Called from the IPC thread on a chunk_tile cache miss.
+     *  Brg-26: known-unrenderable chunks are NOT re-enqueued. Before
+     *  this guard, the panel's 5 s rejected-retry loop re-requested
+     *  every unrenderable chunk forever (789 chunks on the user's
+     *  world), each retry re-rendering a null tile on the tick thread
+     *  and saturating the 1.5 ms/tick budget indefinitely. The 30 s
+     *  refresh rotation clears the set, so promotions still render. */
     public static void requestRender(String dim, int cx, int cz) {
         TickStateMirror m = ACTIVE;
-        if (m != null) m.enqueue(m.priorityQueue, dim, cx, cz);
+        if (m == null) return;
+        if (m.unrenderable.contains(mixKey(dim, cx, cz))) return;
+        m.enqueue(m.priorityQueue, dim, cx, cz);
     }
 
     // ----- tick-thread work --------------------------------------------
@@ -263,8 +271,18 @@ public final class TickStateMirror {
                     flat[n * 2] = cx;
                     flat[n * 2 + 1] = cz;
                     long v = cache.peekVersion(dim, cx, cz);
-                    vers[n] = (int) Math.min(Integer.MAX_VALUE, v);
-                    if (v == 0 && !unrenderable.contains(mixKey(dim, cx, cz))) {
+                    boolean unr = unrenderable.contains(mixKey(dim, cx, cz));
+                    // Brg-26: version -1 tells the panel "this holder has
+                    // no renderable content right now" so it counts the
+                    // chunk as handled (Pnl-71) instead of retrying every
+                    // 5 s. 0 keeps its "not rendered yet" meaning.
+                    // Deliberate: an unrenderable chunk whose cache still
+                    // holds an older tile (v > 0) reports that REAL
+                    // version, so a fresh panel session still fetches the
+                    // cached tile (pure cache hit, no tick-thread work)
+                    // instead of leaving a permanent hole.
+                    vers[n] = unr && v == 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, v);
+                    if (v == 0 && !unr) {
                         enqueue(fillQueue, dim, cx, cz);
                     }
                     n++;

@@ -164,6 +164,12 @@ public final class MapPane {
      *  chunks_topic snapshot via {@link Map#keySet} retainAll. */
     private final java.util.concurrent.ConcurrentHashMap<Long, Long> rejectedChunks =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** Pnl-71: chunks the latest chunks_topic snapshot reported with
+     *  version -1 (bridge-declared unrenderable, Brg-26). Rebuilt on
+     *  every snapshot; consulted by the viewport fan-out so pan/zoom
+     *  never re-fires RPCs for chunks the bridge has said it cannot
+     *  render right now. */
+    private volatile java.util.Set<Long> unrenderableChunks = java.util.Collections.emptySet();
     /** Pnl-63: retry a sentinel-rejected chunk after this many ms.
      *  5 s is short enough that a chunk re-promoted to FULL fills
      *  the gap quickly when the user walks back, long enough that
@@ -390,6 +396,9 @@ public final class MapPane {
                 tileVersions.clear();
                 requested.clear();
                 rejectedChunks.clear();
+                // Pnl-71: keys are (cx, cz) only; stale entries from the
+                // previous dim must not suppress viewport requests here.
+                unrenderableChunks = java.util.Collections.emptySet();
                 expectedChunksThisDim = 0;
                 chunkBboxMinCx = Integer.MAX_VALUE;
                 chunkBboxMaxCx = Integer.MIN_VALUE;
@@ -695,9 +704,27 @@ public final class MapPane {
             // remove entries from rejectedChunks.
             long now = System.currentTimeMillis();
             int budget = CHUNKS_TOPIC_FETCH_BUDGET;
+            java.util.Set<Long> unrenderableNow = new java.util.HashSet<>();
             for (int[] c : coords) {
                 long key = MapData.chunkKey(c[0], c[1]);
                 int wantV = c.length > 2 ? c[2] : 0;
+                // Pnl-71 (Brg-26): version -1 means the bridge declares
+                // this holder unrenderable right now (LOAD-level holder
+                // with no usable surface data). Count it as handled via
+                // rejectedChunks so the loading bar reaches 100%, and
+                // send NO RPC: before this guard the panel re-requested
+                // all 789 such chunks every 5 s forever, the bar never
+                // completed, and the bridge burned its whole render
+                // budget re-rendering null tiles. If the chunk later
+                // promotes, the bridge reports a version > 0 and the
+                // normal retry path below picks it up (success removes
+                // the rejectedChunks entry). A disk-warm tile we already
+                // render stays on screen untouched.
+                if (wantV == -1) {
+                    unrenderableNow.add(key);
+                    if (!tileImages.containsKey(key)) rejectedChunks.putIfAbsent(key, now);
+                    continue;
+                }
                 if (requested.containsKey(key)) continue;
                 // Pnl-70: a tile we already rendered is only
                 // re-requested when the bridge reports a newer
@@ -721,6 +748,7 @@ public final class MapPane {
                 requestChunk(c[0], c[1], wantV);
                 if (--budget <= 0) break;
             }
+            unrenderableChunks = unrenderableNow;
             updateLoadingProgress();
             // Pnl-66 (2026-04-27): on the FIRST chunks_topic
             // snapshot, kick off content verification so the panel
@@ -757,6 +785,12 @@ public final class MapPane {
         // Pick up to 5 chunks that are in both cache and world.
         java.util.List<int[]> samples = new java.util.ArrayList<>(5);
         for (int[] c : coords) {
+            // Pnl-71: never sample chunks the bridge marked
+            // unrenderable (version -1) — a chunk_tile RPC for them
+            // returns the all-zero sentinel, which would compare as a
+            // mismatch against a valid disk-cached tile and could wipe
+            // a perfectly good cache.
+            if (c.length > 2 && c[2] == -1) continue;
             long key = MapData.chunkKey(c[0], c[1]);
             ChunkTile cachedData = tileData.get(key);
             if (cachedData == null) continue; // cache doesn't have it
@@ -794,7 +828,11 @@ public final class MapPane {
                             JsonNode result = node.get("result");
                             if (result != null) {
                                 int[] freshArgb = nodeToInts(result.path("surfaceArgb"));
-                                if (freshArgb != null && freshArgb.length == 256) {
+                                // Pnl-71: an all-zero sentinel means "no
+                                // data right now", not "different world";
+                                // never count it as a mismatch.
+                                if (freshArgb != null && freshArgb.length == 256
+                                        && !isAllZero(freshArgb)) {
                                     long key = MapData.chunkKey(sx, sz);
                                     ChunkTile cached = tileData.get(key);
                                     if (cached != null && cached.surfaceArgb != null
@@ -846,6 +884,13 @@ public final class MapPane {
         return true;
     }
 
+    /** Pnl-71: true if every entry is 0 (the bridge's chunk_tile miss
+     *  sentinel; a real tile always has the alpha bits set). */
+    private static boolean isAllZero(int[] a) {
+        for (int v : a) if (v != 0) return false;
+        return true;
+    }
+
     /** Pnl-66: clear in-memory and disk caches, reset progress
      *  bookkeeping, and trigger a redraw. Called when content
      *  verification detected the cache is from a different world. */
@@ -855,6 +900,7 @@ public final class MapPane {
         tileVersions.clear();
         requested.clear();
         rejectedChunks.clear();
+        unrenderableChunks = java.util.Collections.emptySet();
         TileDiskCache c = this.tileCache;
         if (c != null) c.wipeAll();
         LOG.info("runtime cache wipe complete; chunks will re-render");
@@ -1464,6 +1510,10 @@ public final class MapPane {
                     if (cx < minCx || cx > maxCx || cz < minCz || cz > maxCz) continue;
                     long key = MapData.chunkKey(cx, cz);
                     if (tileImages.containsKey(key) || requested.containsKey(key)) continue;
+                    // Pnl-71: skip bridge-declared unrenderable chunks
+                    // entirely; the snapshot loop picks them up once
+                    // the bridge reports a real version again.
+                    if (unrenderableChunks.contains(key)) continue;
                     // Pnl-68: also skip recently-rejected chunks
                     // (mirrors onChunksSnapshot behaviour) so a
                     // pan-induced redraw doesn't immediately re-fire

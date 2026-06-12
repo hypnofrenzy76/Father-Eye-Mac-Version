@@ -12,6 +12,13 @@ import java.util.Arrays;
  * for 20 s / 1 min / 5 min averages and computes percentiles from the most
  * recent 1200 ticks (1 minute) of MSPT samples.
  *
+ * <p>Brg-26 (2026-06-12): the MSPT window now samples tick WORK duration
+ * (Phase.START to Phase.END), not tick-to-tick interval. The interval
+ * floors at ~50 ms on a healthy server (the scheduler sleeps out the
+ * remainder of each 50 ms slot), so the panel reported "50 ms MSPT" on an
+ * idle server whose real tick work was ~1.7 ms (spark fCQsoH1Y4v). TPS
+ * buckets are unchanged: they count ticks against wall-clock windows.
+ *
  * <p>Single-thread access: all writes happen on the server tick thread; reads
  * for snapshot happen on the publisher thread. Snapshots are therefore best-
  * effort consistent (small races acceptable).
@@ -24,14 +31,11 @@ public final class TpsCollector {
     private static final long[] tickNanos = new long[WINDOW_TICKS];
     private static int tickIdx = 0;
     private static int tickCount = 0;
-    private static long lastTickStartNanos = 0L;
     /** Brg-24: Phase.START timestamp of the in-flight tick. */
     private static long phaseStartNanos = 0L;
     /** Brg-24: duration of the most recent tick's WORK (Phase.START
-     *  to Phase.END), excluding the inter-tick sleep. The rolling
-     *  window above measures tick-to-tick interval, which floors at
-     *  ~50 ms on a healthy server and would make any "is the server
-     *  struggling?" comparison useless. */
+     *  to Phase.END), excluding the inter-tick sleep. Brg-26: the
+     *  rolling window now stores the same work-duration samples. */
     private static volatile double lastTickDurationMs = 0.0;
 
     // Wall-clock counters for TPS-by-window:
@@ -54,15 +58,12 @@ public final class TpsCollector {
 
         long now = System.nanoTime();
         if (phaseStartNanos != 0L) {
-            lastTickDurationMs = (now - phaseStartNanos) / 1_000_000.0;
-        }
-        if (lastTickStartNanos != 0L) {
-            long delta = now - lastTickStartNanos;
-            tickNanos[tickIdx] = delta;
+            long workNanos = now - phaseStartNanos;
+            lastTickDurationMs = workNanos / 1_000_000.0;
+            tickNanos[tickIdx] = workNanos;
             tickIdx = (tickIdx + 1) % WINDOW_TICKS;
             if (tickCount < WINDOW_TICKS) tickCount++;
         }
-        lastTickStartNanos = now;
 
         long nowMs = System.currentTimeMillis();
         if (bucket20sStart == 0) {

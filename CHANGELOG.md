@@ -2,6 +2,42 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-12 — 0.3.2-mac.1: true MSPT, map reaches 100%, cmd_run slash
+
+Spark profile `fCQsoH1Y4v` (300 s, idle server) showed the server thread
+91.9% parked with ~1.7 ms of real tick work, while the panel reported
+"50 ms MSPT", and the map sat below 100% with "789 unrenderable".
+
+- **Brg-26 `TpsCollector`**: the rolling MSPT window stored tick-to-tick
+  interval (floors at ~50 ms on a healthy server because the scheduler
+  sleeps out each 50 ms slot). All panel MSPT stats (avg/P50/P95/P99)
+  therefore read ~50 regardless of load. The window now stores tick WORK
+  duration (Phase.START to Phase.END), the same quantity `lastTickMs()`
+  already exposed for the mirror back-off.
+- **Brg-26 `TickStateMirror`**: chunks whose render returns null
+  (LOAD-level holders with no usable surface data) are now reported in
+  `chunks_topic` with version **-1** instead of 0, and
+  `requestRender` ignores chunks currently marked unrenderable. Before
+  this, the panel's 5 s rejected-retry loop re-requested all 789 such
+  chunks forever; each retry re-enqueued a render that returned null,
+  saturating the mirror's 1.5 ms/tick budget indefinitely (visible as a
+  permanent 3% server-thread cost in the profile and
+  `missEnqueued=7990/60s` in the ChunkTile log).
+- **Pnl-71 `MapPane`**: version -1 chunks are counted as handled
+  (`rejectedChunks`) with no RPC, so the loading bar reaches 100% with
+  the "(N unrenderable)" suffix and stays there. New
+  `unrenderableChunks` snapshot set also gates the viewport fan-out.
+  When a chunk later promotes, the bridge reports a real version and the
+  existing retry path renders it (success removes the rejected entry).
+  Cache verification hardened: unrenderable chunks are never sampled,
+  and an all-zero sentinel response is never counted as a world
+  mismatch (prevents a false runtime cache wipe).
+- **Brg-26 `RpcHandlers.cmdRun`**: strips leading slashes before
+  Brigadier dispatch; `/spark profiler start` from the panel console
+  previously failed with "Unknown or incomplete command ... at
+  position 0".
+- Versions: all artifacts 0.3.1-mac.1 -> **0.3.2-mac.1**.
+
 ## 2026-06-07 — version unification
 
 Maintainer directive: unify all four artifact versions for clarity.

@@ -3,7 +3,7 @@ package io.fathereye.bridge.util;
 public final class Constants {
 
     public static final String MOD_ID = "fathereye_bridge";
-    public static final String BRIDGE_VERSION = "0.3.1-mac.1";
+    public static final String BRIDGE_VERSION = "0.3.2-mac.1";
     public static final int PROTOCOL_VERSION = 1;
 
     public static final String PIPE_PREFIX = "\\\\.\\pipe\\fathereye-";

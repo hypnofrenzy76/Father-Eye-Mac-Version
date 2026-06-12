@@ -49,7 +49,13 @@ public final class RpcHandlers {
     // ----- handlers ----------------------------------------------------
 
     private static Object cmdRun(JsonNode args, MinecraftServer server) throws CommandSyntaxException {
-        String command = args.path("command").asText("");
+        String command = args.path("command").asText("").trim();
+        // Brg-26: Brigadier rejects a leading slash when dispatched
+        // programmatically ("Unknown or incomplete command ... at
+        // position 0"); the vanilla console strips it before dispatch,
+        // so users reasonably type "/spark ..." into the panel. Strip
+        // it here the same way.
+        while (command.startsWith("/")) command = command.substring(1);
         if (command.isEmpty()) throw new IllegalArgumentException("command required");
         CommandSource src = server.createCommandSourceStack().withPermission(4).withSuppressedOutput();
         int rc = server.getCommands().getDispatcher().execute(command, src);
