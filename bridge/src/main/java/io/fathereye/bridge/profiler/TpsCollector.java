@@ -25,6 +25,14 @@ public final class TpsCollector {
     private static int tickIdx = 0;
     private static int tickCount = 0;
     private static long lastTickStartNanos = 0L;
+    /** Brg-24: Phase.START timestamp of the in-flight tick. */
+    private static long phaseStartNanos = 0L;
+    /** Brg-24: duration of the most recent tick's WORK (Phase.START
+     *  to Phase.END), excluding the inter-tick sleep. The rolling
+     *  window above measures tick-to-tick interval, which floors at
+     *  ~50 ms on a healthy server and would make any "is the server
+     *  struggling?" comparison useless. */
+    private static volatile double lastTickDurationMs = 0.0;
 
     // Wall-clock counters for TPS-by-window:
     private static long bucket20sStart = 0;
@@ -38,9 +46,16 @@ public final class TpsCollector {
 
     @SubscribeEvent
     public static void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase == TickEvent.Phase.START) {
+            phaseStartNanos = System.nanoTime();
+            return;
+        }
         if (event.phase != TickEvent.Phase.END) return;
 
         long now = System.nanoTime();
+        if (phaseStartNanos != 0L) {
+            lastTickDurationMs = (now - phaseStartNanos) / 1_000_000.0;
+        }
         if (lastTickStartNanos != 0L) {
             long delta = now - lastTickStartNanos;
             tickNanos[tickIdx] = delta;
@@ -78,6 +93,11 @@ public final class TpsCollector {
             bucket5mCount = 0;
         }
     }
+
+    /** Brg-24: most recent tick's work duration in ms (START to END).
+     *  Used by {@link TickStateMirror} as a back-off signal: when the
+     *  previous tick ran long, ALL map work is skipped that tick. */
+    public static double lastTickMs() { return lastTickDurationMs; }
 
     private static volatile double cachedTps20s = 20.0;
     private static volatile double cachedTps1m  = 20.0;

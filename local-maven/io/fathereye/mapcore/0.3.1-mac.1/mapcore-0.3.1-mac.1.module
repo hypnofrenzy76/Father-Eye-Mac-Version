@@ -1,0 +1,80 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "io.fathereye",
+    "module": "mapcore",
+    "version": "0.3.1-mac.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "7.6.4"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.3.1-mac.1.jar",
+          "url": "mapcore-0.3.1-mac.1.jar",
+          "size": 15185,
+          "sha512": "391666f63956ae9a216ad66152fcc0f1c1244cb6f4cacf67efe8fe35517ab78c00b93f93e7be0fe0abbed38f250b94238b8d5fc071b4ef6982178670ff7b4be5",
+          "sha256": "10678230d2d91d2811402d943d11c0b1d2588d09b44dae84fa7f86c693469305",
+          "sha1": "806a0f75c5a252e2f769c3c0b6dd3517dcc574a4",
+          "md5": "fc24b40315a6da0644c274d8ddfdcbe1"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.3.1-mac.1.jar",
+          "url": "mapcore-0.3.1-mac.1.jar",
+          "size": 15185,
+          "sha512": "391666f63956ae9a216ad66152fcc0f1c1244cb6f4cacf67efe8fe35517ab78c00b93f93e7be0fe0abbed38f250b94238b8d5fc071b4ef6982178670ff7b4be5",
+          "sha256": "10678230d2d91d2811402d943d11c0b1d2588d09b44dae84fa7f86c693469305",
+          "sha1": "806a0f75c5a252e2f769c3c0b6dd3517dcc574a4",
+          "md5": "fc24b40315a6da0644c274d8ddfdcbe1"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "mapcore-0.3.1-mac.1-sources.jar",
+          "url": "mapcore-0.3.1-mac.1-sources.jar",
+          "size": 11903,
+          "sha512": "044facc4aec32b9830b5deb495d0e5c311b0d9dd25d179fddb123d2ac375d0cdf92a157e273a54c1a49898082902bcad0b72bfc7cb4bcb3ebdf4fa24586af190",
+          "sha256": "7cd066675a8b69e8ff9e55c83a5c970144b6c6db542e4baf0e9f00a5156a5e77",
+          "sha1": "1a784ba8fe7315aa149009063a76b0a2e55d30fa",
+          "md5": "8f194b0e236c7b363243d9ad37faf031"
+        }
+      ]
+    }
+  ]
+}

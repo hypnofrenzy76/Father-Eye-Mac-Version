@@ -116,6 +116,17 @@ public final class MapPane {
     private final Map<Long, WritableImage> tileImages = new ConcurrentHashMap<>();
     /** Raw tile data, kept for click-info lookups (biome, height). */
     private final Map<Long, ChunkTile> tileData = new ConcurrentHashMap<>();
+    /** Pnl-70 (2026-06-12): bridge content version of each rendered
+     *  tile, stamped at request time from chunks_topic's
+     *  chunkVersions array (Brg-24). A tile is re-requested when the
+     *  bridge reports a HIGHER version than the one we rendered —
+     *  i.e. exactly when its content changed server-side. Disk-warmed
+     *  tiles have no recorded version (server version counters reset
+     *  on restart, so persisting them would be meaningless); they're
+     *  treated as stale once and refreshed against the live world,
+     *  which doubles as the Pnl-66 freshness guarantee for every
+     *  cached chunk, not just the 5 verification samples. */
+    private final Map<Long, Integer> tileVersions = new ConcurrentHashMap<>();
     /** Pnl-68 (2026-04-27): chunk-key -> request-sent timestamp.
      *  Thread-safe so the IPC reader thread can mutate it directly
      *  without going through Platform.runLater (which back-pressures
@@ -376,6 +387,7 @@ public final class MapPane {
                 currentDim = s;
                 tileImages.clear();
                 tileData.clear();
+                tileVersions.clear();
                 requested.clear();
                 rejectedChunks.clear();
                 expectedChunksThisDim = 0;
@@ -622,6 +634,10 @@ public final class MapPane {
             return;
         }
         // Parse flat int array [cx0, cz0, cx1, cz1, ...].
+        // Pnl-70: chunkVersions (Brg-24) is parallel to the coord
+        // pairs; missing/short on legacy bridges, in which case every
+        // version reads 0 and the panel behaves exactly as before.
+        JsonNode versArr = dimNode.get("chunkVersions");
         int n = arr.size();
         java.util.List<int[]> coords = new java.util.ArrayList<>(n / 2);
         // Pnl-53: also recompute the bounding box so the "Fit all"
@@ -631,7 +647,9 @@ public final class MapPane {
         for (int i = 0; i + 1 < n; i += 2) {
             int cx = arr.get(i).asInt(0);
             int cz = arr.get(i + 1).asInt(0);
-            coords.add(new int[] { cx, cz });
+            int v = versArr != null && versArr.isArray() && versArr.size() > i / 2
+                    ? versArr.get(i / 2).asInt(0) : 0;
+            coords.add(new int[] { cx, cz, v });
             if (cx < bMinCx) bMinCx = cx;
             if (cx > bMaxCx) bMaxCx = cx;
             if (cz < bMinCz) bMinCz = cz;
@@ -679,7 +697,19 @@ public final class MapPane {
             int budget = CHUNKS_TOPIC_FETCH_BUDGET;
             for (int[] c : coords) {
                 long key = MapData.chunkKey(c[0], c[1]);
-                if (tileImages.containsKey(key) || requested.containsKey(key)) continue;
+                int wantV = c.length > 2 ? c[2] : 0;
+                if (requested.containsKey(key)) continue;
+                // Pnl-70: a tile we already rendered is only
+                // re-requested when the bridge reports a newer
+                // content version. wantV == 0 means "bridge hasn't
+                // rendered it yet" — nothing to fetch beyond what we
+                // have. Tiles without a recorded version (disk-warm)
+                // refresh once against the live world.
+                if (tileImages.containsKey(key)) {
+                    Integer haveV = tileVersions.get(key);
+                    boolean stale = wantV > 0 && (haveV == null || haveV < wantV);
+                    if (!stale) continue;
+                }
                 // Pnl-62/63/64: skip if recently rejected. Eligible
                 // for retry once the rejection is older than
                 // REJECTED_RETRY_MS, but we keep the entry in the
@@ -688,7 +718,7 @@ public final class MapPane {
                 Long rejectedAt = rejectedChunks.get(key);
                 if (rejectedAt != null && (now - rejectedAt) < REJECTED_RETRY_MS) continue;
                 requested.put(key, now);
-                requestChunk(c[0], c[1]);
+                requestChunk(c[0], c[1], wantV);
                 if (--budget <= 0) break;
             }
             updateLoadingProgress();
@@ -822,6 +852,7 @@ public final class MapPane {
     private void wipeCacheRuntime() {
         tileImages.clear();
         tileData.clear();
+        tileVersions.clear();
         requested.clear();
         rejectedChunks.clear();
         TileDiskCache c = this.tileCache;
@@ -1040,6 +1071,7 @@ public final class MapPane {
                     Long k = it.next();
                     it.remove();
                     tileData.remove(k);
+                    tileVersions.remove(k);
                 }
             }
         });
@@ -1440,7 +1472,7 @@ public final class MapPane {
                     if (rejectedAt != null
                             && (System.currentTimeMillis() - rejectedAt) < REJECTED_RETRY_MS) continue;
                     requested.put(key, System.currentTimeMillis());
-                    requestChunk(cx, cz);
+                    requestChunk(cx, cz, 0);
                     if (--budget <= 0) break outer;
                 }
             }
@@ -1449,7 +1481,16 @@ public final class MapPane {
         updateLoadingProgress();
     }
 
-    private void requestChunk(int cx, int cz) {
+    /**
+     * @param version the chunks_topic content version that motivated
+     *        this request (0 if unknown, e.g. viewport fan-out).
+     *        Stamped into {@link #tileVersions} on success so the
+     *        Pnl-70 staleness check has a baseline. Stamping the
+     *        request-time version (rather than the latest snapshot's)
+     *        means a version bump that races the in-flight RPC still
+     *        triggers a follow-up request — never a missed update.
+     */
+    private void requestChunk(int cx, int cz, int version) {
         long key = MapData.chunkKey(cx, cz);
         try {
             Map<String, Object> args = new LinkedHashMap<>();
@@ -1493,6 +1534,14 @@ public final class MapPane {
                     // forever.
                     String dim = result.path("dimensionId").asText(currentDim);
                     onChunkTileResponse(cx, cz, new ChunkTile(dim, cx, cz, biomes, heights, surface));
+                    // Pnl-70: record which content version this render
+                    // corresponds to. Only meaningful when the tile
+                    // was actually stored (sentinels early-return in
+                    // onChunkTileResponse and leave `requested`
+                    // cleared but tileImages untouched).
+                    if (version > 0 && tileImages.containsKey(key)) {
+                        tileVersions.put(key, version);
+                    }
                 } catch (Throwable t) {
                     LOG.warn("decode chunk_tile failed", t);
                     failChunkRequest(key);

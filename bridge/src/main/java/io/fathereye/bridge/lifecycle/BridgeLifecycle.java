@@ -38,6 +38,7 @@ public final class BridgeLifecycle {
     private static io.fathereye.bridge.log.IpcAppender logAppender;
     private static io.fathereye.bridge.rpc.RpcDispatcher rpc;
     private static io.fathereye.bridge.profiler.JfrController jfr;
+    private static io.fathereye.bridge.profiler.TickStateMirror tickMirror;
     private static java.net.ServerSocket sharedServerSocket;
 
     private BridgeLifecycle() {}
@@ -51,6 +52,11 @@ public final class BridgeLifecycle {
             UUID uuid = InstanceUuid.loadOrCreate(serverConfigDir);
 
             IpcSession.ServerInfoSupplier info = buildServerInfo(server);
+
+            // Brg-24: tick-thread state mirror MUST exist before the
+            // publisher starts — players/mobs/chunks topics read its
+            // snapshots and chunk_tile misses enqueue into it.
+            tickMirror = io.fathereye.bridge.profiler.TickStateMirror.install();
 
             publisher = new Publisher();
             publisher.start();
@@ -114,6 +120,7 @@ public final class BridgeLifecycle {
             if (logAppender != null) logAppender.uninstall();
             if (accept != null) accept.stop();
             if (publisher != null) publisher.stop();
+            if (tickMirror != null) tickMirror.uninstall();
             if (jfr != null) jfr.closeAll();
             if (sharedServerSocket != null) {
                 try { sharedServerSocket.close(); } catch (java.io.IOException ignored) {}
@@ -126,6 +133,7 @@ public final class BridgeLifecycle {
             logAppender = null;
             accept = null;
             publisher = null;
+            tickMirror = null;
             jfr = null;
             rpc = null;
             sharedServerSocket = null;

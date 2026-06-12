@@ -17,6 +17,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * Periodic publisher: scheduled at multiple cadences, drains live state and
  * sends Snapshot frames to whichever {@link IpcSession} is currently
  * connected. M5 wires only the {@link Topics#TPS} cadence.
+ *
+ * <p>Brg-24 (2026-06-12): players/mobs/chunks no longer collect world
+ * state from this thread. Spark profile IzzU6Fus2J traced 32.7% of
+ * server-thread time to WorldStateCollector.collectChunks()'s
+ * off-thread getChunk calls (each one marshals onto the tick thread
+ * via supplyAsync(..).join() and can block in managedBlock during
+ * generation). These topics now serialise immutable snapshots that
+ * {@link io.fathereye.bridge.profiler.TickStateMirror} rebuilds once
+ * per second ON the tick thread under an explicit budget; this thread
+ * does JSON encoding and socket I/O only.
  */
 public final class Publisher {
 
@@ -86,9 +96,11 @@ public final class Publisher {
         IpcSession s = activeSession;
         if (s == null || !s.subscriptions().isSubscribed(Topics.PLAYERS)) return;
         try {
-            s.sendSnapshot(Topics.PLAYERS,
-                    io.fathereye.bridge.profiler.WorldStateCollector.collectPlayers(),
-                    playersSeq.incrementAndGet());
+            // Brg-24: snapshot built on the tick thread by TickStateMirror;
+            // null until the first rebuild (~1 s after server start).
+            Object snap = io.fathereye.bridge.profiler.TickStateMirror.playersSnapshot();
+            if (snap == null) return;
+            s.sendSnapshot(Topics.PLAYERS, snap, playersSeq.incrementAndGet());
         } catch (Throwable t) {
             LOG.warn("publish {} failed: {}", Topics.PLAYERS, t.toString());
         }
@@ -98,9 +110,9 @@ public final class Publisher {
         IpcSession s = activeSession;
         if (s == null || !s.subscriptions().isSubscribed(Topics.MOBS)) return;
         try {
-            s.sendSnapshot(Topics.MOBS,
-                    io.fathereye.bridge.profiler.WorldStateCollector.collectMobs(),
-                    mobsSeq.incrementAndGet());
+            Object snap = io.fathereye.bridge.profiler.TickStateMirror.mobsSnapshot();
+            if (snap == null) return;
+            s.sendSnapshot(Topics.MOBS, snap, mobsSeq.incrementAndGet());
         } catch (Throwable t) {
             LOG.warn("publish {} failed: {}", Topics.MOBS, t.toString());
         }
@@ -110,9 +122,9 @@ public final class Publisher {
         IpcSession s = activeSession;
         if (s == null || !s.subscriptions().isSubscribed(Topics.CHUNKS)) return;
         try {
-            s.sendSnapshot(Topics.CHUNKS,
-                    io.fathereye.bridge.profiler.WorldStateCollector.collectChunks(),
-                    chunksSeq.incrementAndGet());
+            Object snap = io.fathereye.bridge.profiler.TickStateMirror.chunksSnapshot();
+            if (snap == null) return;
+            s.sendSnapshot(Topics.CHUNKS, snap, chunksSeq.incrementAndGet());
         } catch (Throwable t) {
             LOG.warn("publish {} failed: {}", Topics.CHUNKS, t.toString());
         }

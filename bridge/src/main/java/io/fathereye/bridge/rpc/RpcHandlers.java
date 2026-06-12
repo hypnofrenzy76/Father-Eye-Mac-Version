@@ -35,7 +35,10 @@ public final class RpcHandlers {
         d.register("cmd_time", RpcHandlers::cmdTime);
         d.register("srv_stop", RpcHandlers::srvStop);
         d.register("srv_restart", RpcHandlers::srvRestart);
-        d.register("chunk_tile", io.fathereye.bridge.rpc.ChunkTileHandler::handle);
+        // Brg-24: chunk_tile is a pure ChunkSurfaceCache read (the
+        // TickStateMirror renders on the tick thread); serve it inline
+        // on the IPC thread so tile bursts never queue tick-thread work.
+        d.registerDirect("chunk_tile", io.fathereye.bridge.rpc.ChunkTileHandler::handle);
     }
 
     public static void registerJfr(RpcDispatcher d, io.fathereye.bridge.profiler.JfrController jfr) {

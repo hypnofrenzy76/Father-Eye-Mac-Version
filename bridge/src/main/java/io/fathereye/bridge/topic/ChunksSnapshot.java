@@ -34,6 +34,18 @@ public final class ChunksSnapshot {
          */
         public int[] chunks = new int[0];
 
+        /**
+         * Brg-24 (2026-06-12): per-chunk tile content version,
+         * parallel to {@link #chunks} (chunkVersions[i] belongs to
+         * chunks[i*2], chunks[i*2+1]). 0 = not yet rendered (panel
+         * should keep whatever it has and wait). Versions only
+         * advance when a tile's content actually changed
+         * (ChunkSurfaceCache.putVersioned), so the panel re-requests
+         * exactly the changed tiles: a stable world is zero tile
+         * traffic at steady state.
+         */
+        public int[] chunkVersions = new int[0];
+
         public DimChunks() {}
     }
 

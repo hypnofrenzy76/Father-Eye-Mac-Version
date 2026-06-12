@@ -34,6 +34,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * dim, ~1 KB per tile = 16 MB per dim worst case. LRU evicts the
  * least-recently-accessed when full. Per-dim sub-maps so eviction
  * within one dim doesn't penalise others.
+ *
+ * <p>Brg-24 (2026-06-12): content versioning. {@link #putVersioned}
+ * assigns each tile a monotonically increasing version, bumped ONLY
+ * when the tile's pixel content actually changed versus the cached
+ * copy. {@link TickStateMirror} ships per-chunk versions in
+ * chunks_topic so the panel re-requests exactly the tiles that
+ * changed and nothing else. Versions live in a parallel map (not in
+ * mapcore's ChunkTile, which stays a pure wire POJO); eviction and
+ * invalidation clear both maps together so a missing tile always
+ * reads version 0 (= "render pending") rather than a stale number.
  */
 public final class ChunkSurfaceCache {
 
@@ -47,6 +57,13 @@ public final class ChunkSurfaceCache {
      *  is lock-free; inner LinkedHashMap synchronised for thread-
      *  safe access-order updates. */
     private final Map<String, LinkedHashMap<Long, ChunkTile>> byDim = new ConcurrentHashMap<>();
+
+    /** dim -> (chunkKey -> content version). Parallel to {@link #byDim};
+     *  mutated only under the same per-dim monitor. */
+    private final Map<String, ConcurrentHashMap<Long, Long>> versionsByDim = new ConcurrentHashMap<>();
+    /** Global monotonic version source. Starts at 1 so 0 always means
+     *  "never rendered". */
+    private final AtomicLong versionCounter = new AtomicLong(0);
 
     private final AtomicLong hits = new AtomicLong();
     private final AtomicLong misses = new AtomicLong();
@@ -71,6 +88,12 @@ public final class ChunkSurfaceCache {
             protected boolean removeEldestEntry(Map.Entry<Long, ChunkTile> eldest) {
                 if (size() > maxEntries) {
                     evictions.incrementAndGet();
+                    // Brg-24: drop the version with the tile so the
+                    // chunk reads version 0 again and the mirror
+                    // re-renders it on the next sweep instead of the
+                    // panel believing a stale version is still served.
+                    ConcurrentHashMap<Long, Long> vm = versionsByDim.get(k);
+                    if (vm != null) vm.remove(eldest.getKey());
                     return true;
                 }
                 return false;
@@ -117,6 +140,53 @@ public final class ChunkSurfaceCache {
     }
 
     /**
+     * Brg-24: store a tile and assign it a content version. The
+     * version only advances when the pixel/height/biome content
+     * differs from what is already cached, so a 30 s refresh render
+     * of an unchanged chunk costs zero panel traffic (same version
+     * in chunks_topic = panel skips the re-request).
+     *
+     * @return the tile's current version (existing one if content
+     *         was unchanged), or 0 if the tile was rejected.
+     */
+    public long putVersioned(ChunkTile tile) {
+        if (tile == null || tile.dimensionId == null) return 0L;
+        if (tile.surfaceArgb == null || tile.surfaceArgb.length != 256) return 0L;
+        LinkedHashMap<Long, ChunkTile> m = dimMap(tile.dimensionId);
+        ConcurrentHashMap<Long, Long> vm =
+                versionsByDim.computeIfAbsent(tile.dimensionId, k -> new ConcurrentHashMap<>());
+        long key = packKey(tile.chunkX, tile.chunkZ);
+        synchronized (m) {
+            ChunkTile prev = m.get(key);
+            Long prevVersion = vm.get(key);
+            if (prev != null && prevVersion != null && sameContent(prev, tile)) {
+                return prevVersion;
+            }
+            m.put(key, tile);
+            long v = versionCounter.incrementAndGet();
+            vm.put(key, v);
+            return v;
+        }
+    }
+
+    /** Brg-24: current content version for a chunk, 0 if uncached.
+     *  Does NOT touch LRU recency (reads the parallel version map
+     *  only), so the 1 Hz chunks_topic sweep can't churn eviction
+     *  order. */
+    public long peekVersion(String dim, int cx, int cz) {
+        ConcurrentHashMap<Long, Long> vm = versionsByDim.get(dim);
+        if (vm == null) return 0L;
+        Long v = vm.get(packKey(cx, cz));
+        return v == null ? 0L : v;
+    }
+
+    private static boolean sameContent(ChunkTile a, ChunkTile b) {
+        return java.util.Arrays.equals(a.surfaceArgb, b.surfaceArgb)
+                && java.util.Arrays.equals(a.heightMap, b.heightMap)
+                && java.util.Arrays.equals(a.biomes, b.biomes);
+    }
+
+    /**
      * Remove a cached tile (e.g. when terrain changes invalidate
      * it). Currently unused but exposed for future
      * ChunkEvent.Unload + ChunkChangedEvent integration.
@@ -126,6 +196,8 @@ public final class ChunkSurfaceCache {
         if (m == null) return;
         synchronized (m) {
             m.remove(packKey(cx, cz));
+            ConcurrentHashMap<Long, Long> vm = versionsByDim.get(dim);
+            if (vm != null) vm.remove(packKey(cx, cz));
         }
     }
 
