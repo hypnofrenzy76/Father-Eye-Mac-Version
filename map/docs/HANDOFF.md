@@ -22,7 +22,7 @@ This subproject implements the in-game side: the Forge `Screen` that opens with 
 
 ## The mapcore contract
 
-- Pinned version: **`io.fathereye:mapcore:0.3.1-mac.1`** (exact, not range). (2026-06-07: bumped from 0.2.0 to align with the unified Father Eye Mac version line; API surface unchanged.)
+- Pinned version: **`io.fathereye:mapcore:0.3.3-mac.1`** (exact, not range). (2026-06-07: bumped from 0.2.0 to align with the unified Father Eye Mac version line; API surface unchanged. 2026-06-12: bumped to 0.3.3-mac.1 with the unified version line; API surface still unchanged.)
 - Public package: `io.fathereye.mapcore.api.*`. Anything outside is internal and may change.
 - Full API reference: `docs/mapcore-api-contract.md` at the root of the Server GUI repo.
 - Bumps: any signature change → major version. New methods on a NEW interface → minor. Both sessions update their pin together.

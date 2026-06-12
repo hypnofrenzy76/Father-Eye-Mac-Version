@@ -1,8 +1,10 @@
-# mapcore API Contract — v0.3.1-mac.1
+# mapcore API Contract — v0.3.3-mac.1
 
 This document is the source of truth for the public API of `io.fathereye:mapcore`. The desktop panel session and the in-game admin map session both pin to it and update only when this document is bumped.
 
-> **Pin**: `implementation 'io.fathereye:mapcore:0.3.1-mac.1'` — exact, no ranges.
+> **Pin**: `implementation 'io.fathereye:mapcore:0.3.3-mac.1'` — exact, no ranges.
+>
+> **2026-06-12 note**: version label moved from `0.3.1-mac.1` to `0.3.3-mac.1` to track the unified Father Eye Mac version line (Brg-26/Pnl-71 and Bld-11 bumps). The public API surface is unchanged; `CONTRACT_MAJOR=0` and `CONTRACT_MINOR=2` are deliberately NOT bumped.
 >
 > **2026-06-07 note**: the mapcore artifact version was jumped from `0.2.0` to `0.3.1-mac.1` to align with the unified Father Eye Mac version line (mapcore, bridge, panel, and map now share one version string). The public API surface is unchanged from `0.2.0`; only the version label moved. `CONTRACT_MAJOR=0` and `CONTRACT_MINOR=2` are deliberately NOT bumped, since they describe the API contract — which is identical.
 
@@ -22,7 +24,7 @@ Only `io.fathereye.mapcore.api.*` is public. Anything in `io.fathereye.mapcore.i
 
 | Type | Purpose |
 |------|---------|
-| `MapCore` (final, no instances) | Entry point. `VERSION="0.3.1-mac.1"`, `CONTRACT_MAJOR=0`, `CONTRACT_MINOR=2`, `noOpRenderer()`, `basicRenderer()` (the v0.2 real renderer). |
+| `MapCore` (final, no instances) | Entry point. `VERSION="0.3.3-mac.1"`, `CONTRACT_MAJOR=0`, `CONTRACT_MINOR=2`, `noOpRenderer()`, `basicRenderer()` (the v0.2 real renderer). |
 | `MapTexture` (interface) | Opaque handle to a backend-uploaded texture. |
 | `MapTextureLoader` (interface) | Backend factory: load from raw ARGB or PNG `InputStream`; release. |
 | `MapGraphics` (interface) | Immediate-mode 2D drawing surface. Integer pixels, ARGB colors, no AA, no rotation. |

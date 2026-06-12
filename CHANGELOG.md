@@ -2,6 +2,28 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-12, 0.3.3-mac.1: doc version pins caught up (Doc-04)
+
+- **Stale pins updated**: `docs/mapcore-api-contract.md` (title, pin
+  line, `MapCore.VERSION` table row) and `map/docs/HANDOFF.md` (pinned
+  version line) updated 0.3.1-mac.1 -> 0.3.3-mac.1, closing the item
+  deferred from Bld-11. Dated notes added in both docs; the API surface
+  is unchanged so `CONTRACT_MAJOR=0` / `CONTRACT_MINOR=2` stay put.
+- **mapcore 0.3.3-mac.1 published to `local-maven/`** so the new doc
+  pin resolves, per the HANDOFF bump workflow (contract doc first, then
+  publish, then notify). 0.3.2-mac.1 was never published; skipping it
+  is safe because all subprojects consume mapcore via
+  `project(':mapcore')`.
+- **map/docs/HANDOFF.md edit authorized by maintainer** despite the
+  parallel session's `map/**` claim (doc-only change). HANDOFF.md
+  retained; maintainer decided against deleting it.
+- Triple audit (3 parallel agents): all PASS. Checksums of the new
+  maven metadata verified; jar's compiled `VERSION` constant verified
+  via javap; `.gitignore` `!local-maven/**` negation confirmed so the
+  new artifact directory commits. Only flag was a gitignored stale
+  build temp metadata file under `mapcore/build/tmp/`, regenerated on
+  every publish, no action required.
+
 ## 2026-06-12, 0.3.3-mac.1: blackscale evil eye app icon (Bld-11)
 
 - **New app icon**: nazar (evil eye) amulet in a blackscale (dark
