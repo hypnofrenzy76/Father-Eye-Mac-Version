@@ -1,0 +1,80 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "io.fathereye",
+    "module": "bridge-api",
+    "version": "0.1.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "7.6.4"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "files": [
+        {
+          "name": "bridge-api-0.1.0.jar",
+          "url": "bridge-api-0.1.0.jar",
+          "size": 4417,
+          "sha512": "bb42c7f048b997a8fb6877513e13b939e0b78da4bba357f570e99a6af0434074d436b378ea92f0ee4ff45d036a9f2c479c50bdadf1b72099f7b85ac84b94be63",
+          "sha256": "4a5aa63cb06b20abbcbf15037455048c1d4a44cfec538f59cb0b11005608753a",
+          "sha1": "447a5fd832665346bbb041437f5cce0892c428cc",
+          "md5": "44c652bd62f09bbe263f6d7f6c61be74"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 8,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "bridge-api-0.1.0.jar",
+          "url": "bridge-api-0.1.0.jar",
+          "size": 4417,
+          "sha512": "bb42c7f048b997a8fb6877513e13b939e0b78da4bba357f570e99a6af0434074d436b378ea92f0ee4ff45d036a9f2c479c50bdadf1b72099f7b85ac84b94be63",
+          "sha256": "4a5aa63cb06b20abbcbf15037455048c1d4a44cfec538f59cb0b11005608753a",
+          "sha1": "447a5fd832665346bbb041437f5cce0892c428cc",
+          "md5": "44c652bd62f09bbe263f6d7f6c61be74"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "bridge-api-0.1.0-sources.jar",
+          "url": "bridge-api-0.1.0-sources.jar",
+          "size": 3120,
+          "sha512": "db1d460f868823f5d7d6d71a6c93045f9fc818fb2eed6706ca682b566fe8d65b9794e5e77130d7980a8865622d64b0d415223c9968ebf2411387ac0f224e6a05",
+          "sha256": "022b530a9e6da6bfc36961d4144d1632ca018eef12b0fa67a113f8b4955540bd",
+          "sha1": "5ffac80965da423adf560062b864f4bf711ced90",
+          "md5": "837856b195f75244f76c54f37b430002"
+        }
+      ]
+    }
+  ]
+}

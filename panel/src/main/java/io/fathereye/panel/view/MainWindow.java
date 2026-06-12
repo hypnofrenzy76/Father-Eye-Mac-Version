@@ -31,6 +31,9 @@ public final class MainWindow {
     private final BorderPane root = new BorderPane();
     private final Label statusLabel = new Label("Initialising…");
     private final TabPane mainTabs = new TabPane();
+    
+    // Capability-gated tabs
+    private Tab arcanumTab;
 
     private final StatsPane statsPane = new StatsPane();
     private final ConsolePane consolePane = new ConsolePane();
@@ -39,6 +42,7 @@ public final class MainWindow {
     private final ModsPane modsPane = new ModsPane();
     private final MapPane mapPane = new MapPane();
     private final ConfigPane configPane = new ConfigPane();
+    private final ArcanumPane arcanumPane = new ArcanumPane();
     private final Button startBtn = new Button("Start");
     private final Button stopBtn = new Button("Stop");
     private final Button restartBtn = new Button("Restart");
@@ -82,6 +86,9 @@ public final class MainWindow {
         // bottom SplitPane is gone, so the active tab now fills the
         // entire window (modulo toolbar + status bar). The map remains
         // the default selection.
+        // Create the Arcanum tab but don't add it yet (capability-gated)
+        arcanumTab = tab("Arcanum", arcanumPane.root());
+        
         mainTabs.getTabs().addAll(
                 tab("Map", mapPane.root()),
                 tab("Players", playersPane.root()),
@@ -102,11 +109,28 @@ public final class MainWindow {
     public ModsPane modsPane() { return modsPane; }
     public MapPane mapPane() { return mapPane; }
     public ConfigPane configPane() { return configPane; }
+    public ArcanumPane arcanumPane() { return arcanumPane; }
     public Button startBtn() { return startBtn; }
     public Button stopBtn() { return stopBtn; }
     public Button restartBtn() { return restartBtn; }
     public Button configureBtn() { return configureBtn; }
     public void setServerState(String s) { serverStateLabel.setText("Server: " + s); }
+
+    /**
+     * Show or hide the Arcanum tab based on server capabilities.
+     * @param hasArcanum true if the server supports Arcanum mod
+     */
+    public void setArcanumCapability(boolean hasArcanum) {
+        Platform.runLater(() -> {
+            if (hasArcanum && !mainTabs.getTabs().contains(arcanumTab)) {
+                // Insert before the last tab (which is the stub Alerts tab)
+                int insertIndex = mainTabs.getTabs().size() - 1;
+                mainTabs.getTabs().add(insertIndex, arcanumTab);
+            } else if (!hasArcanum && mainTabs.getTabs().contains(arcanumTab)) {
+                mainTabs.getTabs().remove(arcanumTab);
+            }
+        });
+    }
 
     /**
      * Pnl-67 (2026-04-27): set the wall-clock epoch ms when the

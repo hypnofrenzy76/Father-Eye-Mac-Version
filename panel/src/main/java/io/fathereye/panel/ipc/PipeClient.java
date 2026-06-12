@@ -110,6 +110,7 @@ public final class PipeClient {
                 }
                 info.dimensionCount = info.dimensions.length;
                 info.serverHeapMaxBytes = w.serverHeapMaxBytes;
+                info.capabilities = w.capabilities == null ? new String[0] : w.capabilities;
                 return info;
             }
             if ("Error".equals(reply.kind)) {
@@ -216,5 +217,7 @@ public final class PipeClient {
         public int modCount;
         public int dimensionCount;
         public long serverHeapMaxBytes;
+        /** Server-side capabilities reported during handshake. */
+        public String[] capabilities = new String[0];
     }
 }

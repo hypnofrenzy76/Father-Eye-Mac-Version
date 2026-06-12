@@ -69,6 +69,10 @@ public final class BridgeLifecycle {
             io.fathereye.bridge.rpc.RpcHandlers.registerAll(rpc);
             jfr = new io.fathereye.bridge.profiler.JfrController(server.getServerDirectory().toPath());
             io.fathereye.bridge.rpc.RpcHandlers.registerJfr(rpc, jfr);
+            // Brg-25: open the dispatcher to third-party mods (built-ins
+            // registered first so collisions are rejected, never shadowed).
+            io.fathereye.bridge.api.FatherEyeApi.installBackend(
+                    new io.fathereye.bridge.rpc.ApiBackend(rpc));
 
             // Pnl-22 / Brg-12: transport is now ALWAYS TCP localhost on an
             // ephemeral port — Windows included. The original Windows named-pipe
@@ -117,6 +121,7 @@ public final class BridgeLifecycle {
     @SubscribeEvent
     public static void onServerStopping(FMLServerStoppingEvent event) {
         try {
+            io.fathereye.bridge.api.FatherEyeApi.uninstallBackend();
             if (logAppender != null) logAppender.uninstall();
             if (accept != null) accept.stop();
             if (publisher != null) publisher.stop();
@@ -144,7 +149,7 @@ public final class BridgeLifecycle {
     private static IpcSession.ServerInfoSupplier buildServerInfo(MinecraftServer server) {
         final String mc = MCPVersion.getMCVersion();
         final String forge = ForgeVersion.getVersion();
-        final String[] caps = new String[] { "tps", "console_log", "players", "mods_impact", "chunk_tile", "jfr" };
+        final String[] baseCaps = new String[] { "tps", "console_log", "players", "mods_impact", "chunk_tile", "jfr" };
 
         List<String> dims = new ArrayList<>();
         server.levelKeys().forEach(k -> dims.add(k.location().toString()));
@@ -157,7 +162,17 @@ public final class BridgeLifecycle {
         return new IpcSession.ServerInfoSupplier() {
             @Override public String mcVersion()       { return mc; }
             @Override public String forgeVersion()    { return forge; }
-            @Override public String[] capabilities()  { return caps; }
+            // Brg-25: merged live at hello time so capabilities added by
+            // other mods during their own server-starting handlers are
+            // visible regardless of event-handler ordering.
+            @Override public String[] capabilities() {
+                String[] extra = io.fathereye.bridge.api.FatherEyeApi.capabilities();
+                if (extra.length == 0) return baseCaps;
+                String[] merged = new String[baseCaps.length + extra.length];
+                System.arraycopy(baseCaps, 0, merged, 0, baseCaps.length);
+                System.arraycopy(extra, 0, merged, baseCaps.length, extra.length);
+                return merged;
+            }
             @Override public String[] dimensions()    { return dimsArr; }
             @Override public IpcEnvelope.ModInfo[] mods() { return modsArr; }
         };

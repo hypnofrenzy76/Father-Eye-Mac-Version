@@ -13,6 +13,7 @@ plugins {
 rootProject.name = 'fathereye'
 
 include 'mapcore'
+include 'bridge-api'
 include 'bridge'
 include 'map'
 include 'panel'

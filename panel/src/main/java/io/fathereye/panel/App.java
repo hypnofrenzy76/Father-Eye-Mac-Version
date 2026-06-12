@@ -881,6 +881,22 @@ public final class App extends Application {
             // entities or TEs) still appear with an Idle placeholder.
             mainWindow.modsPane().setKnownMods(welcome.modIds);
 
+            // Pnl-71: check for Arcanum capability and show/hide the tab
+            boolean hasArcanum = false;
+            if (welcome.capabilities != null) {
+                for (String cap : welcome.capabilities) {
+                    if ("arcanum".equals(cap)) {
+                        hasArcanum = true;
+                        break;
+                    }
+                }
+            }
+            mainWindow.setArcanumCapability(hasArcanum);
+            if (hasArcanum) {
+                mainWindow.arcanumPane().bindPipeClient(pipeClient);
+                LOG.info("Arcanum capability detected; admin tab enabled");
+            }
+
             // Order matters: start the PipeReader and subscribe to all
             // topics BEFORE binding the map. Pnl-17's bindPipeClient triggers
             // a redraw that fires up to 64 chunk_tile sendRequests on the FX
@@ -1067,6 +1083,9 @@ public final class App extends Application {
         // Pnl-67: reset the uptime label so the user doesn't see a
         // stale ever-growing duration after the server stopped.
         Platform.runLater(() -> mainWindow.setServerStartedAtEpochMs(-1L));
+        // Pnl-71: hide Arcanum tab and unbind client on disconnect
+        mainWindow.setArcanumCapability(false);
+        mainWindow.arcanumPane().bindPipeClient(null);
         // Pnl-45 (2026-04-26): the reconnect watcher must NOT run on
         // ipcExecutor for the same reason tryConnect doesn't (see
         // startInternal). A Thread.sleep loop on the single IPC thread

@@ -1,0 +1,55 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+version = project.findProperty('bridgeApiVersion') ?: '0.1.0'
+archivesBaseName = 'fathereye-bridge-api'
+
+// bridge-api is consumed by Forge mods running on Java 8, exactly like
+// mapcore. Pure Java: NO Forge, Minecraft, or Jackson types may appear
+// in this module — consumers compileOnly against it and the classes are
+// served at runtime from the bridge's shaded jar.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+    withSourcesJar()
+}
+
+compileJava {
+    options.release = 8
+}
+compileTestJava {
+    options.release = 8
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        bridgeApi(MavenPublication) {
+            from components.java
+            groupId = 'io.fathereye'
+            artifactId = 'bridge-api'
+            version = project.version
+        }
+    }
+    repositories {
+        maven {
+            name = 'localMaven'
+            url = uri("${rootProject.projectDir}/local-maven")
+        }
+    }
+}

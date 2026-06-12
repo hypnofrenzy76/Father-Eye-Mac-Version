@@ -65,6 +65,12 @@ dependencies {
     // and breaks them).
     implementation project(':mapcore')
 
+    // Brg-25: pure-Java registration surface for third-party mods
+    // (FatherEyeApi). Shaded into the bridge jar via the io.fathereye:.*
+    // include below, so consumer mods compileOnly against the published
+    // bridge-api artifact and load the classes from our jar at runtime.
+    api project(':bridge-api')
+
     // IPC + concurrency + serialization (Java 8 compatible)
     implementation "net.java.dev.jna:jna-platform:${jnaVersion}"
     implementation "org.jctools:jctools-core:${jctoolsVersion}"

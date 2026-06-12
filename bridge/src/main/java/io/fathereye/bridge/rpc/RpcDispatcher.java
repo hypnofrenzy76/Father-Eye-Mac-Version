@@ -40,6 +40,14 @@ public final class RpcDispatcher {
 
     public void registerDirect(String op, Handler h) { directHandlers.put(op, h); }
 
+    /** Brg-25: snapshot of every registered op name, used by
+     *  {@link ApiBackend} to refuse collisions with built-ins. */
+    public java.util.Set<String> registeredOps() {
+        java.util.Set<String> ops = new java.util.HashSet<>(handlers.keySet());
+        ops.addAll(directHandlers.keySet());
+        return ops;
+    }
+
     public CompletableFuture<Object> dispatch(String op, JsonNode args) {
         Handler direct = directHandlers.get(op);
         Handler h = direct != null ? direct : handlers.get(op);
