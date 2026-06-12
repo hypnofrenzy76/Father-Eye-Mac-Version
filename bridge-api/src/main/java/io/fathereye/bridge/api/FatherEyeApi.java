@@ -64,7 +64,11 @@ public final class FatherEyeApi {
         void register(String op, RpcHandler handler, boolean direct);
     }
 
-    private static final Pattern OP_NAME = Pattern.compile("[a-z][a-z0-9_]*");
+    // Lowercase start, then camelCase/underscores — matches both the
+    // bridge's built-in style (cmd_run, chunk_tile) and consumer style
+    // (arcanum_getConfig). The first release of this pattern rejected
+    // uppercase entirely and broke every camelCase registration at boot.
+    private static final Pattern OP_NAME = Pattern.compile("[a-z][a-zA-Z0-9_]*");
 
     private static final Object LOCK = new Object();
     private static final Map<String, Registration> registrations = new LinkedHashMap<>();

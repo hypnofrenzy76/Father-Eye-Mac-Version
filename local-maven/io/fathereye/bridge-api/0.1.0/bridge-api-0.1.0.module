@@ -27,11 +27,11 @@
         {
           "name": "bridge-api-0.1.0.jar",
           "url": "bridge-api-0.1.0.jar",
-          "size": 4417,
-          "sha512": "bb42c7f048b997a8fb6877513e13b939e0b78da4bba357f570e99a6af0434074d436b378ea92f0ee4ff45d036a9f2c479c50bdadf1b72099f7b85ac84b94be63",
-          "sha256": "4a5aa63cb06b20abbcbf15037455048c1d4a44cfec538f59cb0b11005608753a",
-          "sha1": "447a5fd832665346bbb041437f5cce0892c428cc",
-          "md5": "44c652bd62f09bbe263f6d7f6c61be74"
+          "size": 4420,
+          "sha512": "2afb8fc3faa5cef0c9a987ab1791fec2e8a9e6b8aee28e7a6cadf2e0677510bae8379124aaa6635b8a786861c8742ad111df7229625c3fdad9130f180aeb92d3",
+          "sha256": "d02d6af4ff88ec8777e5c107722c33f95391e6cf0ed12f387b2e7a91c2fc2ed7",
+          "sha1": "423cc62b7ea4914e5b6976393947ff714967ee50",
+          "md5": "6f620cef712984d0cec0a8b9430c073e"
         }
       ]
     },
@@ -48,11 +48,11 @@
         {
           "name": "bridge-api-0.1.0.jar",
           "url": "bridge-api-0.1.0.jar",
-          "size": 4417,
-          "sha512": "bb42c7f048b997a8fb6877513e13b939e0b78da4bba357f570e99a6af0434074d436b378ea92f0ee4ff45d036a9f2c479c50bdadf1b72099f7b85ac84b94be63",
-          "sha256": "4a5aa63cb06b20abbcbf15037455048c1d4a44cfec538f59cb0b11005608753a",
-          "sha1": "447a5fd832665346bbb041437f5cce0892c428cc",
-          "md5": "44c652bd62f09bbe263f6d7f6c61be74"
+          "size": 4420,
+          "sha512": "2afb8fc3faa5cef0c9a987ab1791fec2e8a9e6b8aee28e7a6cadf2e0677510bae8379124aaa6635b8a786861c8742ad111df7229625c3fdad9130f180aeb92d3",
+          "sha256": "d02d6af4ff88ec8777e5c107722c33f95391e6cf0ed12f387b2e7a91c2fc2ed7",
+          "sha1": "423cc62b7ea4914e5b6976393947ff714967ee50",
+          "md5": "6f620cef712984d0cec0a8b9430c073e"
         }
       ]
     },
@@ -68,11 +68,11 @@
         {
           "name": "bridge-api-0.1.0-sources.jar",
           "url": "bridge-api-0.1.0-sources.jar",
-          "size": 3120,
-          "sha512": "db1d460f868823f5d7d6d71a6c93045f9fc818fb2eed6706ca682b566fe8d65b9794e5e77130d7980a8865622d64b0d415223c9968ebf2411387ac0f224e6a05",
-          "sha256": "022b530a9e6da6bfc36961d4144d1632ca018eef12b0fa67a113f8b4955540bd",
-          "sha1": "5ffac80965da423adf560062b864f4bf711ced90",
-          "md5": "837856b195f75244f76c54f37b430002"
+          "size": 3267,
+          "sha512": "e0efc8cf113600ac93a2036d7d39ca97bc9f4ac0074b14d348009761c679f9672814f560a414666f7e7e3eebe80aca5863effe508c9166225defdeab13c1394f",
+          "sha256": "4f26be3d9a5d8ca87e150e51b942b936165a531a7062260ef21378d71b0923de",
+          "sha1": "564c5d4715cc76841460408f60c680038fd33792",
+          "md5": "ec0a56bd5018d95926ee28389c3a21ba"
         }
       ]
     }
