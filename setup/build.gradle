@@ -4,7 +4,7 @@ plugins {
     id 'org.openjfx.javafxplugin' version '0.1.0'
 }
 
-version = project.findProperty('panelVersion') ?: '0.3.2-mac.1'
+version = project.findProperty('panelVersion') ?: '0.3.3-mac.1'
 archivesBaseName = 'fathereye-setup'
 
 java {
@@ -41,7 +41,7 @@ dependencies {
 // :setup:jpackageMacApp; the bridge build is implicit.
 tasks.register('embedBridgeJar', Copy) {
     dependsOn ':bridge:shadowJar'
-    def bridgeVer = project.findProperty('bridgeVersion') ?: '0.3.2-mac.1'
+    def bridgeVer = project.findProperty('bridgeVersion') ?: '0.3.3-mac.1'
     from "${rootProject.projectDir}/bridge/build/libs/fathereye-bridge-${bridgeVer}.jar"
     into "${projectDir}/src/main/resources"
     rename { 'fathereye-bridge-bundle.jar' }
@@ -135,7 +135,9 @@ tasks.register('jpackageMacApp') {
                 '--dest', outDir.absolutePath,
                 '--mac-package-identifier', feSetupBundleId,
                 '--mac-package-name', appName,
-                '--vendor', 'Father Eye'
+                '--vendor', 'Father Eye',
+                // Bld-11: same blackscale evil eye icon as the panel app.
+                '--icon', rootProject.layout.projectDirectory.file('panel/icons/fathereye.icns').asFile.absolutePath
         ]
         feSetupJavaOptions.each { cmd << '--java-options' << it }
         exec { commandLine cmd }

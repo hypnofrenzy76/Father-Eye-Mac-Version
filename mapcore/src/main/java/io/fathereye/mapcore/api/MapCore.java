@@ -13,7 +13,7 @@ public final class MapCore {
      *  unified Father Eye Mac version line. CONTRACT_MAJOR / CONTRACT_MINOR
      *  below are a SEPARATE wire-protocol number and intentionally do
      *  not move with the artifact version. */
-    public static final String VERSION = "0.3.2-mac.1";
+    public static final String VERSION = "0.3.3-mac.1";
 
     /** Wire-protocol version for any data contracts that depend on this library. */
     public static final int CONTRACT_MAJOR = 0;

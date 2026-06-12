@@ -117,7 +117,7 @@ public final class PlayerHeadCache {
         String url = String.format(HEAD_URL, java.net.URLEncoder.encode(identifier, "UTF-8"));
         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(8))
-                .header("User-Agent", "FatherEye-Panel/0.3.2-mac.1 (+https://github.com/hypnofrenzy76/Father-Eye-Mac-Version)")
+                .header("User-Agent", "FatherEye-Panel/0.3.3-mac.1 (+https://github.com/hypnofrenzy76/Father-Eye-Mac-Version)")
                 .GET()
                 .build();
         HttpResponse<byte[]> resp = http.send(req, HttpResponse.BodyHandlers.ofByteArray());

@@ -2,6 +2,31 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-12, 0.3.3-mac.1: blackscale evil eye app icon (Bld-11)
+
+- **New app icon**: nazar (evil eye) amulet in a blackscale (dark
+  monochrome) palette. Master art is generated programmatically by
+  `panel/icons/gen_icon.py` (pure-stdlib PNG writer; Pillow is not
+  installable on the build Mac's system Python). `panel/icons/gen_icon.sh`
+  scales the 1024 px master via `sips` and packs `fathereye.icns` via
+  `iconutil`.
+- **jpackage wiring**: `--icon panel/icons/fathereye.icns` added to
+  `:panel:jpackageMacApp`, `:panel:jpackageMacDmg`, and
+  `:setup:jpackageMacApp`, so the panel app, the dmg, and the Setup
+  wizard all carry the icon.
+- **Version bump for clarity**: all unified artifacts 0.3.2-mac.1 ->
+  0.3.3-mac.1 (gradle.properties, `App.VERSION`,
+  `Constants.BRIDGE_VERSION`, `PlayerHeadCache` User-Agent,
+  `MapCore.VERSION`, `MapCoreTest`). Bridge bumped in lockstep because
+  the panel handshake warns on bridge/panel version mismatch. Triple
+  audit flagged stale `0.3.2-mac.1` fallback literals in
+  `setup/build.gradle` and comment examples in `panel/build.gradle`;
+  both updated. `bridgeApiVersion` stays 0.1.0 (independent API
+  contract).
+- **Deployed**: `Father Eye.app` and `Father Eye Setup.app` replaced in
+  `/Applications`; `fathereye-bridge-0.3.3-mac.1.jar` swapped into the
+  server `mods/` folder (0.3.2 removed).
+
 ## 2026-06-12 — 0.3.2-mac.1: true MSPT, map reaches 100%, cmd_run slash
 
 Spark profile `fCQsoH1Y4v` (300 s, idle server) showed the server thread

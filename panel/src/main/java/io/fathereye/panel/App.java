@@ -50,7 +50,7 @@ public final class App extends Application {
     }
 
     private static final Logger LOG = LoggerFactory.getLogger("FatherEye-Panel");
-    private static final String VERSION = "0.3.2-mac.1";
+    private static final String VERSION = "0.3.3-mac.1";
 
     /** Names of the topics the panel auto-subscribes to once handshaken. */
     private static final String[] AUTO_SUBSCRIBE = {
