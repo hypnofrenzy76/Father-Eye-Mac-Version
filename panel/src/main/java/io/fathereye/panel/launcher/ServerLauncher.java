@@ -140,7 +140,16 @@ public final class ServerLauncher {
 
         setState(State.STARTING);
 
-        ProcessBuilder pb = new ProcessBuilder(spec.buildCommand())
+        java.util.List<String> cmd = spec.buildCommand();
+        // Mac fork (2026-06-07): log the exact command + cwd so launch
+        // failures like "Unable to access jarfile" are diagnosable from
+        // panel.log without attaching a debugger. Includes the resolved
+        // java path and resolved jar path (which is now absolute, per
+        // ServerLaunchSpec.buildCommand()).
+        LOG.info("Launching server: cwd={} cmd[0]={} jar={} argc={}",
+                spec.workingDir, cmd.isEmpty() ? "<empty>" : cmd.get(0),
+                spec.jarName, cmd.size());
+        ProcessBuilder pb = new ProcessBuilder(cmd)
                 .directory(spec.workingDir.toFile())
                 .redirectErrorStream(true);
         process = pb.start();

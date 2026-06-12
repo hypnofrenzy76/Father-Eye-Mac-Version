@@ -194,6 +194,39 @@ tasks.register('jpackageMacApp') {
                 exec { commandLine 'plutil', '-replace', 'LSMinimumSystemVersion', '-string', fePanelMacMinOS, plist.absolutePath }
             }
             println "Set LSMinimumSystemVersion=${fePanelMacMinOS} in ${plist}"
+
+            // Mac fork (2026-06-07): inject TCC usage-description strings so
+            // macOS 10.15+ prompts the user to grant the .app access to user
+            // folders. Without these keys, the LaunchServices sandbox silently
+            // denies open(2) and FileChannel.tryLock() on anything under
+            // ~/Desktop, ~/Documents, or ~/Downloads, which surfaces as
+            // mysterious "Operation not permitted" / stale session.lock /
+            // "server.properties can't be read" failures even though the file
+            // is present and the user owns it. The server is shipped to
+            // ~/Desktop/Server by the Setup wizard, so Desktop access is the
+            // critical one; Documents/Downloads are added defensively for
+            // users who relocate the server directory.
+            def tccKeys = [
+                ['NSDesktopFolderUsageDescription',
+                 'Father Eye reads and writes the Minecraft server folder (default location: ~/Desktop/Server) so it can launch the server, edit server.properties, and store backups.'],
+                ['NSDocumentsFolderUsageDescription',
+                 'Father Eye reads and writes the Minecraft server folder when it is located under your Documents folder.'],
+                ['NSDownloadsFolderUsageDescription',
+                 'Father Eye reads and writes the Minecraft server folder when it is located under your Downloads folder.'],
+                ['NSRemovableVolumesUsageDescription',
+                 'Father Eye reads and writes the Minecraft server folder when it is located on an external drive.']
+            ]
+            tccKeys.each { kv ->
+                def key = kv[0]; def value = kv[1]
+                def ins = exec {
+                    commandLine 'plutil', '-insert', key, '-string', value, plist.absolutePath
+                    ignoreExitValue = true
+                }
+                if (ins.exitValue != 0) {
+                    exec { commandLine 'plutil', '-replace', key, '-string', value, plist.absolutePath }
+                }
+            }
+            println "Set TCC usage-description keys (Desktop/Documents/Downloads/RemovableVolumes) in ${plist}"
         } else {
             logger.warn("Info.plist not found at ${plist}; LSMinimumSystemVersion not set. The .app may show 'requires newer macOS' on launch.")
         }

@@ -82,7 +82,19 @@ public final class ServerLaunchSpec {
         cmd.add(resolveJavaPath());
         cmd.addAll(jvmArgs);
         cmd.add("-jar");
-        cmd.add(jarName);
+        // Mac fork (2026-06-07): pass the absolute path to the server jar
+        // rather than the bare file name. When the panel is launched as a
+        // macOS .app bundle, the child JVM's effective CWD did not always
+        // resolve to ProcessBuilder.directory() (LaunchServices / sandbox
+        // quirk), producing "Error: Unable to access jarfile <name>" even
+        // though the jar existed in workingDir. Resolving against
+        // workingDir here makes the -jar argument independent of the
+        // child's CWD. If jarName is already absolute, Paths.resolve()
+        // returns it unchanged, so existing configs keep working.
+        java.nio.file.Path jarPath = (workingDir != null)
+                ? workingDir.resolve(jarName).toAbsolutePath().normalize()
+                : Paths.get(jarName);
+        cmd.add(jarPath.toString());
         cmd.addAll(mainArgs);
         return cmd;
     }
