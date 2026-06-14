@@ -2,6 +2,9 @@
 
 Newest first. Each entry file explains one substantive change in plain technical terms.
 
+## Standing project rules (always apply)
+- **100% surface parity.** The browser WebPortal and the local Father Eye Panel (macOS desktop app) must always expose the same tabs and the same features, every time. Any tab or feature added to one surface must be added to the other in the same change. A feature is not considered done until it exists, with equivalent behavior, on both surfaces.
+
 | Date | Entry | Summary |
 |------|-------|---------|
 | 2026-06-14 | [2026-06-14-web05-web06-blank-tabs-rollback-tab.md](2026-06-14-web05-web06-blank-tabs-rollback-tab.md) | Web-05/Web-06: web panel "all tabs blank, no console" was a stale `build/install` plus a dead bridge marker (live PID, dead socket) wedging `BridgeConnection` because it only dialled the single newest marker; fix iterates **all** markers and connects to the first that handshakes (`tryMarker`), tears down old reader/client to avoid leaks, and `pruneMarker` only deletes a marker whose PID is dead; UI adds a connecting/offline/connected banner and splits Backups + Rollback into two dedicated tabs (Backups = create + per-player live restore modal; Rollback = whole world/playerdata/both); empirically end-to-end tested twice with a mock bridge + WS client, triple-audited, artifacts rebuilt |
