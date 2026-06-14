@@ -2,6 +2,38 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: panel Stop button regression fix (Pnl-75)
+
+- **Stop button looked dead.** After the Bkp-01 backup overhaul, the
+  panel's pre-stop backup changed from a fast local uncompressed world
+  copy into a compressed `tar | gzip` of the whole world to the external
+  "Server Backups" volume, fronted by an RCON save-off / flush / save-on
+  bracket. On a large world that runs for **minutes**, and the Stop
+  handler ran it **inline with no UI feedback** before calling
+  `launcher.stop()`. The badge stayed RUNNING, the server kept running,
+  and a slow or unmounted external drive could strand the stop forever.
+- **Fix (panel `App.java` only).**
+  - Immediate feedback: clicking Stop now sets "Pre-stop backup running,
+    then stopping..." the instant it is pressed.
+  - Bounded wait: new `PRE_STOP_BACKUP_TIMEOUT_MS` (90 s) ceiling. The
+    backup runs on a dedicated daemon worker and `runPreStopBackupBounded`
+    waits at most 90 s. On timeout it logs, surfaces "backup continues in
+    background", and proceeds to stop. The worker is `shutdown()` (not
+    `shutdownNow()`), so an overrunning backup finishes its own RCON
+    save-on / archive cleanup rather than leaving a half-written archive
+    or a world with saving disabled.
+  - Guaranteed stop: the handler wraps the bounded backup in `try/finally`
+    so `launcher.stop()` is always reached; the helper catches timeout,
+    execution, interrupt, and scheduling/path (`RuntimeException`) failures
+    so it can never propagate and skip the stop.
+- **Data-safety fix (audit, MC-78635).** If the bounded wait times out, the
+  backup's save-off bracket may still be open (autosave disabled) when
+  `/stop` is sent, and a server stopped with autosave off can skip its
+  final chunk flush and lose recent changes. The handler now sends
+  `save-on` on the live server's own stdin in the `finally` **before**
+  `launcher.stop()` (best effort; a missing stdin means the server is
+  already down). No version bump (panel-only behavior fix).
+
 ## 2026-06-14, 0.3.3-mac.1: compressed external backups + live player restore (Bkp-01)
 
 - **Disk-space fix.** The old `BackupService` wrote full, uncompressed

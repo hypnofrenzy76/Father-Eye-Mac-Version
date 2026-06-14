@@ -73,6 +73,15 @@ public final class App extends Application {
     private PipeReader pipeReader;
     private final TopicDispatcher dispatcher = new TopicDispatcher();
 
+    /** Pnl-75 (2026-06-14): hard ceiling on how long the pre-stop backup
+     *  may delay an interactive Stop. The compressed external backup can
+     *  legitimately run for minutes on a large world; past this bound we
+     *  stop the server anyway so the Stop button is never hostage to a
+     *  slow or stalled external drive. The backup process is left running
+     *  to completion (or reaped by its own logic); only the WAIT is
+     *  bounded, so a near-complete archive isn't needlessly discarded. */
+    private static final long PRE_STOP_BACKUP_TIMEOUT_MS = 90_000L;
+
     private ServerLauncher launcher;
     private Watchdog watchdog;
     private io.fathereye.panel.history.MetricsDb metricsDb;
@@ -454,14 +463,39 @@ public final class App extends Application {
         }));
         mainWindow.stopBtn().setOnAction(e -> {
             watchdog.disarm();
-            // Run pre-stop backup in background, then stop.
+            // Pnl-75 (2026-06-14): the pre-stop backup was rewritten (Bkp-01)
+            // from a fast local uncompressed copy into a compressed tar|gzip
+            // stream of the whole world to the external drive, fronted by an
+            // RCON save-off / flush / save-on bracket. On a large world that
+            // takes minutes, and the old handler ran it inline with NO UI
+            // feedback before calling launcher.stop(), so Stop appeared dead:
+            // the badge stayed RUNNING and the server kept running the whole
+            // time. Give immediate feedback, BOUND the backup so a slow or
+            // unmounted external drive can never strand the stop, and ALWAYS
+            // reach launcher.stop() via finally so shutdown is guaranteed.
+            update("Pre-stop backup running, then stopping...");
             new Thread(() -> {
                 try {
-                    io.fathereye.panel.launcher.BackupService.fromConfig(appConfig).runBackup();
-                } catch (Exception ex) {
-                    LOG.warn("pre-stop backup failed: {}", ex.getMessage());
+                    runPreStopBackupBounded(PRE_STOP_BACKUP_TIMEOUT_MS);
+                } finally {
+                    // Pnl-75 (audit fix, data safety): the pre-stop backup
+                    // brackets the world with RCON save-off / save-on. If our
+                    // bounded wait timed out, that bracket may still be open
+                    // (saving disabled) when we send /stop. A server stopped
+                    // with autosave disabled can skip its final chunk flush
+                    // (MC-78635), losing the most recent changes. Defensively
+                    // re-enable saving on the live server's own stdin BEFORE
+                    // /stop so the shutdown save is never gated. Best effort:
+                    // if stdin is gone the server is already down and there is
+                    // nothing to save.
+                    try {
+                        launcher.sendCommand("save-on");
+                    } catch (Exception ignored) {
+                        // server stdin unavailable (already stopped); nothing to do.
+                    }
+                    update("Stopping server...");
+                    launcher.stop();
                 }
-                launcher.stop();
             }, "FatherEye-StopWithBackup").start();
         });
         mainWindow.restartBtn().setOnAction(e -> ipcExecutor.submit(() -> {
@@ -948,6 +982,57 @@ public final class App extends Application {
                 try { stale.close(); } catch (Throwable ignored) {}
                 pipeClient = null;
             }
+        }
+    }
+
+    /**
+     * Pnl-75 (2026-06-14): run the pre-stop compressed backup but never let
+     * it block an interactive Stop for longer than {@code timeoutMs}. The
+     * backup runs on a dedicated daemon worker; we wait for it up to the
+     * bound. On timeout, failure, or interruption we log, surface a status
+     * line, and return so the caller proceeds straight to launcher.stop().
+     * The worker is NOT cancelled with interrupt on timeout: the backup
+     * script flushes the world and brackets RCON save-off/save-on, so we let
+     * it finish its own cleanup rather than risk a half-written archive or a
+     * world left with saving disabled.
+     */
+    private void runPreStopBackupBounded(long timeoutMs) {
+        java.util.concurrent.ExecutorService worker =
+                Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "FatherEye-PreStopBackup");
+                    t.setDaemon(true);
+                    return t;
+                });
+        try {
+            java.util.concurrent.Future<?> f = worker.submit(() ->
+                    io.fathereye.panel.launcher.BackupService.fromConfig(appConfig).runBackup());
+            try {
+                f.get(timeoutMs, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                LOG.warn("pre-stop backup exceeded {} ms; stopping server now, backup continues in background",
+                        timeoutMs);
+                update("Pre-stop backup is taking long; stopping server now (backup continues)...");
+            } catch (java.util.concurrent.ExecutionException ee) {
+                LOG.warn("pre-stop backup failed: {}",
+                        ee.getCause() != null ? ee.getCause().getMessage() : ee.getMessage());
+                update("Pre-stop backup failed; stopping server...");
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                LOG.warn("pre-stop backup wait interrupted; stopping server...");
+            }
+        } catch (RuntimeException re) {
+            // Belt and suspenders: this helper must NEVER propagate, so the
+            // caller's finally always reaches launcher.stop(). submit() can
+            // throw RejectedExecutionException, and fromConfig() can throw an
+            // unchecked path error before the task even runs. Log and fall
+            // through to stop the server regardless.
+            LOG.warn("pre-stop backup could not be scheduled: {}", re.toString());
+            update("Pre-stop backup skipped; stopping server...");
+        } finally {
+            // Don't block shutdown on worker termination; it's a daemon and
+            // will exit on its own. shutdown() (not shutdownNow()) lets an
+            // overrunning backup finish its RCON save-on / archive cleanup.
+            worker.shutdown();
         }
     }
 
