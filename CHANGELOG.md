@@ -2,6 +2,23 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: rebuild + deploy to new macOS paths (Dep-01)
+
+- **Rebuilt all outputs from commit `abe1bb8`.** Every artifact on disk predated
+  that commit (bridge jar 12:02, panel/webportal jars 12:09, `Father Eye.app`
+  Jun 12), so the server and installed apps lacked the region-rollback /
+  disk-chunk work. Rebuilt mapcore (publish), bridge (shadowJar, Mojang to SRG
+  reobf), panel + setup (jpackage macOS apps), and webportal (clean installDist).
+- **New macOS deploy targets (Windows paths retired).** Bridge jar now deploys
+  to `~/Desktop/Server/mods/fathereye-bridge-0.3.3-mac.1.jar` (6192377 to
+  6208465 bytes) and the bundles to `/Applications/Father Eye.app` and
+  `/Applications/Father Eye Setup.app`. The old `C:\Users\Luke\Desktop\Server\mods\`
+  path was Chunky-pregen-only and is no longer used.
+- **Verified.** All rebuilt artifacts postdate the commit (12:23 to 12:24); the
+  deployed Setup app embeds `fathereye-bridge-bundle.jar` byte-identical
+  (6208465 bytes) to the jar dropped into `mods/`. Restart the server to load
+  the new bridge jar. No source changed in this session.
+
 ## 2026-06-14, 0.3.3-mac.1: region-selective rollback + disk-backed pre-gen chunks (Bkp-02, Map-02)
 
 - **Region-selective rollback.** Drag a rubber-band rectangle over the map and
