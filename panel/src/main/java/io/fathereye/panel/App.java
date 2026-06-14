@@ -701,6 +701,7 @@ public final class App extends Application {
         dispatcher.onSnapshot("players_topic", payload -> {
             mainWindow.playersPane().onSnapshot(payload);
             mainWindow.mapPane().onPlayersSnapshot(payload);
+            mainWindow.arcanumPane().onPlayersSnapshot(payload);
             if (metricsDb != null) metricsDb.writeMetric("players_topic", payload);
             // Pnl-41: detect player count increase and disarm alerts
             // for 30 s. Chunk-gen + entity wakeup on player join

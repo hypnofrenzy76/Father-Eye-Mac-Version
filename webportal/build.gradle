@@ -1,0 +1,40 @@
+plugins {
+    id 'application'
+    id 'java'
+}
+
+version = project.findProperty('panelVersion') ?: '0.1.0'
+archivesBaseName = 'fathereye-webportal'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = 'io.fathereye.webportal.WebPortalMain'
+}
+
+dependencies {
+    // Reuses the same IPC wire format as the panel, so it speaks to the
+    // bridge with identical jackson JSON/CBOR codecs. No JavaFX, no JNA:
+    // the portal only ever connects over localhost TCP to a bridge that
+    // is already running on this Mac, so the Windows named-pipe transport
+    // (the only JNA consumer in the panel's ipc package) is not copied.
+    implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:${jacksonVersion}"
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+    implementation "ch.qos.logback:logback-classic:${logbackVersion}"
+
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+}
+
+test {
+    useJUnitPlatform()
+}

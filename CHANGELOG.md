@@ -2,6 +2,121 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: web portal empty-tabs fix (Web-02)
+
+- **Fixed: all web portal dashboard tabs were empty** (Stats, Players,
+  Mobs, Mods, Map) while the server was running; only Console populated.
+- **Root cause.** The bridge wraps every Snapshot/Delta payload as
+  `{ seq, data }` (see `docs/ipc-protocol.md`). The JavaFX panel unwraps
+  `payload.get("data")` before reading topic fields, but the web portal's
+  `BridgeConnection.handleTopic` cached and forwarded the raw `{seq,data}`
+  wrapper. The browser JS reads topic fields directly (`p.tps20s`,
+  `p.players`, `byDim`, ...), found nothing under the wrapper, and left
+  every snapshot tab blank. Console is an Event topic (not wrapped), so it
+  was unaffected.
+- **Fix.** `BridgeConnection.handleTopic` now unwraps the `data` object
+  for `Snapshot`/`Delta` kinds before caching (`latestSnapshots`) and
+  before fanning out to listeners; `Event` payloads pass through verbatim.
+  Both the live WebSocket push and the initial-state path
+  (`allLatest()` on browser connect) now carry the unwrapped shape the JS
+  expects. One-line layering change, mirrors the panel's proven behavior.
+- **Regression test.** New `BridgeConnectionUnwrapTest` stands up a mock
+  TCP bridge plus marker file, runs the real `BridgeConnection`
+  connect/handshake/subscribe path, and asserts snapshots arrive unwrapped
+  (no `seq`/`data`, `tps20s`/`players` at top level) on both the live and
+  cached paths while `console_log` events stay raw. Stable across repeated
+  runs. Marker cleanup hardened with a JVM shutdown hook plus
+  `deleteOnExit` because the test shares the real bridges directory.
+- **Triple-audit (rule 9).** Three parallel reviewers agreed the fix is
+  correct and complete with no regressions and no remaining field-name
+  mismatches. Two latent items flagged for the user, not changed here:
+  (1) in `ensureConnected`, `onConnected` is dispatched after subscribes
+  so a topic frame can reach a listener before the welcome callback
+  (benign: the browser reads `welcome()`/`allLatest()` on attach);
+  (2) the Map tab still depends on `chunk_tile` RPC responses and the
+  Arcanum tab on its capability, so those can render later for reasons
+  unrelated to this fix.
+
+## 2026-06-13, 0.3.3-mac.1: browser web portal over Tailscale (Web-01)
+
+- **New `webportal` Gradle module** giving the full panel control
+  surface in a browser, intended for remote use over a Tailscale
+  tailnet. Additive only: no mod, server jar, or panel source changed.
+  Added `include 'webportal'` to `settings.gradle`.
+- **Reuses the panel IPC wire format.** The panel's `ipc` classes are
+  copied into `io.fathereye.webportal.ipc` (TCP transport only; the
+  Windows named-pipe transport, the sole JNA consumer, is dropped) so
+  the portal speaks to the existing bridge unchanged. The module has no
+  JavaFX and no JNA dependency, only jackson + slf4j/logback.
+- **Authentication.** Single long operator password stored only as a
+  salted PBKDF2WithHmacSHA256 hash (210k iterations) at
+  `~/Library/Application Support/FatherEye/webportal/auth.json` (chmod
+  600). First run reads `FATHEREYE_WEB_PASSWORD` (>= 16 chars) or
+  generates one and prints it once. 256-bit opaque session tokens with
+  12-hour sliding expiry, constant-time compare, per-source lockout (8
+  failures -> 15 minutes). `--set-password=` rewrites the hash.
+- **JDK-only transport stack.** Custom HTTP/1.1 server on a raw
+  `ServerSocket` (so `/ws` can hijack the socket) and a self-contained
+  RFC 6455 WebSocket endpoint, no servlet container or WS library.
+  Security headers (`nosniff`, `X-Frame-Options: DENY`, no-referrer) on
+  every response; `fe_session` cookie is HttpOnly + SameSite=Strict.
+- **Live data + control.** `BridgeConnection` mirrors the panel's
+  connect/handshake/subscribe sequence (tps_topic, console_log,
+  players_topic, mobs_topic, mods_impact_topic, chunks_topic), caches
+  the latest snapshot per topic, auto-reconnects every 5 s, and forwards
+  browser RPC. The inline browser UI replicates Stats, Console, Players
+  (kick/ban/op/whitelist/tp), Mobs, Mods, interactive Map (chunk tiles,
+  pan/zoom, player markers), World (weather/time), Arcanum admin, and
+  server stop/restart.
+- **Run.** `./gradlew :webportal:run --args="--port=8765"` (binds
+  0.0.0.0; `--host=127.0.0.1` to restrict to loopback). Open
+  `http://<this-mac-tailscale-name>:8765` from another tailnet device.
+- **Build + smoke test.** `:webportal:compileJava` and `:installDist`
+  succeed. curl checks confirmed login/redirect/protection flow,
+  security headers, and asset serving; the `/ws` upgrade returned `101`
+  with the canonical RFC 6455 `Sec-WebSocket-Accept` and streamed a
+  status frame.
+- Version stays 0.3.3-mac.1 (new module, no existing artifact changed).
+  Changes are uncommitted; maintainer commits on explicit request only.
+
+## 2026-06-12, 0.3.3-mac.1: Arcanum player tab fixed via live player feed (Pnl-73)
+
+- **Players tab now populates.** The bridge RPC `arcanum_getPlayers`
+  returns a UUID-keyed map with `homesCount`, but the panel expected an
+  array under `players` with `homes`, so the table was always empty and
+  the rank-change control never appeared. `processPlayersResponse`
+  (panel `ArcanumPane.java`) now parses the UUID-keyed map (entries are
+  deep-copied before the uuid key is injected), still accepts the array
+  shape, and reads `homesCount` with `homes` as fallback. Fix is
+  panel-side only; the bridge and server jars are untouched.
+- **Live online status from the active player list.** `App.java` now
+  feeds the existing `players_topic` snapshot (the same feed the
+  Players tab uses) into a new `ArcanumPane.onPlayersSnapshot`, which
+  tracks currently online UUIDs and refreshes the table rows
+  (`TableView.refresh()`, JavaFX thread via `Platform.runLater`).
+- **Joined-name cache.** Every player name seen in the snapshot is
+  cached (uuid -> name) and persisted to
+  `~/Library/Application Support/FatherEye/arcanum-player-names.json`
+  (via `PlatformPaths`), so offline players keep their last known name
+  instead of the bridge's "Unknown". Cache saves run on a background
+  thread, only when a name actually changes.
+- **Panel quit behavior confirmed as designed**: closing the panel
+  stops the server (anti-orphan hook retained, maintainer decision).
+- Triple audit (3 parallel agents): no blockers after fixes. Adopted:
+  deep-copy before JsonNode mutation, explicit previous-value compare
+  on cache put, `TableView.refresh()` instead of a list self-setAll,
+  async cache save. Rejected with rationale: clear()+addAll for the
+  online set (would expose an empty-set window; retainAll+addAll is
+  equivalent without it), claimed NPE on `name.equals(previous)` (name
+  is the non-null receiver). Accepted minors: unbounded name cache
+  (bounded in practice by players ever joined), broad exception catch
+  in cache IO (intentional robustness), redundant online OR check
+  (bridge flag plus live set, covers staleness between the two feeds).
+- Version stays 0.3.3-mac.1 (panel-only change, bridge handshake pin
+  unchanged). Rebuilt `dist/Father Eye.app` and replaced
+  `/Applications/Father Eye.app`; new methods verified in the packaged
+  jar via javap. `Father Eye Setup.app` untouched (no panel code).
+
 ## 2026-06-12, 0.3.3-mac.1: doc version pins caught up (Doc-04)
 
 - **Stale pins updated**: `docs/mapcore-api-contract.md` (title, pin

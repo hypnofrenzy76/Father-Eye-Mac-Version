@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fathereye.panel.ipc.PipeClient;
+import io.fathereye.panel.util.PlatformPaths;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -37,6 +38,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Pnl-71: Live admin editor for the Arcanum server-side essentials mod.
@@ -86,6 +91,9 @@ public final class ArcanumPane {
     private TableView<KitRow> kitsTable;
     private TableView<ItemRow> kitItemsTable;
     
+    // Players editor components
+    private TableView<PlayerRow> playersTable;
+    
     // Globals editors
     private ChoiceBox<String> defaultRankChoice;
     private Spinner<Integer> teleportWarmupSpinner;
@@ -113,8 +121,18 @@ public final class ArcanumPane {
     private final ObservableList<KitRow> kitsData = FXCollections.observableArrayList();
     private final ObservableList<WarpRow> warpsData = FXCollections.observableArrayList();
     private final ObservableList<PlayerRow> playersData = FXCollections.observableArrayList();
-    
+
+    // Pnl-73: uuid -> last known name cache, fed by the live players_topic
+    // snapshot and persisted across panel restarts. The bridge only knows
+    // names of currently online players (it reports "Unknown" otherwise),
+    // so the panel remembers every name it has ever seen join.
+    private final Map<String, String> nameCache = new ConcurrentHashMap<>();
+    private final Set<String> onlineUuids = ConcurrentHashMap.newKeySet();
+    private final Path nameCachePath =
+            PlatformPaths.appDataDir().resolve("arcanum-player-names.json");
+
     public ArcanumPane() {
+        loadNameCache();
         buildUI();
         setupSectionNavigation();
         showPlaceholder();
@@ -833,6 +851,7 @@ public final class ArcanumPane {
         // Players table
         TableView<PlayerRow> table = new TableView<>(playersData);
         table.setPrefHeight(400);
+        playersTable = table;
         
         TableColumn<PlayerRow, String> nameCol = new TableColumn<>("Name");
         nameCol.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().name));
@@ -997,23 +1016,137 @@ public final class ArcanumPane {
         JsonNode result = response.get("result");
         if (result == null) return;
         
-        // Parse defensively: may be wrapped in "players" or be the array directly
-        JsonNode playersArray = result.get("players");
-        if (playersArray == null && result.isArray()) {
-            playersArray = result;
+        // Parse defensively: the bridge returns a map keyed by uuid, but
+        // accept an array (bare or wrapped in "players") as well.
+        JsonNode playersNode = result.get("players");
+        if (playersNode == null) {
+            playersNode = result;
         }
         
-        if (playersArray == null || !playersArray.isArray()) return;
+        List<JsonNode> entries = new ArrayList<>();
+        if (playersNode.isArray()) {
+            for (JsonNode p : playersNode) {
+                entries.add(p);
+            }
+        } else if (playersNode.isObject()) {
+            java.util.Iterator<Map.Entry<String, JsonNode>> it = playersNode.fields();
+            while (it.hasNext()) {
+                Map.Entry<String, JsonNode> e = it.next();
+                JsonNode v = e.getValue();
+                if (!v.isObject()) continue;
+                ObjectNode copy = ((ObjectNode) v).deepCopy();
+                if (copy.path("uuid").asText("").isEmpty()) {
+                    copy.put("uuid", e.getKey());
+                }
+                entries.add(copy);
+            }
+        } else {
+            return;
+        }
         
         playersData.clear();
-        for (JsonNode player : playersArray) {
+        for (JsonNode player : entries) {
             PlayerRow row = new PlayerRow();
             row.uuid = player.path("uuid").asText("");
-            row.name = player.path("name").asText("");
             row.rank = player.path("rank").asText("");
-            row.homes = player.path("homes").asInt(0);
-            row.online = player.path("online").asBoolean(false);
+            row.homes = player.has("homesCount")
+                    ? player.path("homesCount").asInt(0)
+                    : player.path("homes").asInt(0);
+            row.online = player.path("online").asBoolean(false)
+                    || onlineUuids.contains(row.uuid);
+            String name = player.path("name").asText("");
+            if (name.isEmpty() || "Unknown".equals(name)) {
+                name = nameCache.getOrDefault(row.uuid, "Unknown");
+            } else {
+                nameCache.put(row.uuid, name);
+            }
+            row.name = name;
             playersData.add(row);
+        }
+    }
+
+    /**
+     * Pnl-73: fed from the live players_topic snapshot (the same feed the
+     * Players tab uses). Tracks who is online right now and caches every
+     * joined player's name so offline rows keep a readable name.
+     * Called on the IPC thread.
+     */
+    public void onPlayersSnapshot(JsonNode payload) {
+        if (payload == null) return;
+        JsonNode data = payload.get("data");
+        if (data == null) return;
+        JsonNode players = data.get("players");
+        if (players == null || !players.isArray()) return;
+        
+        Set<String> current = new HashSet<>();
+        boolean cacheChanged = false;
+        for (JsonNode p : players) {
+            String uuid = p.path("uuid").asText("");
+            String name = p.path("name").asText("");
+            if (uuid.isEmpty()) continue;
+            current.add(uuid);
+            if (!name.isEmpty()) {
+                String previous = nameCache.put(uuid, name);
+                if (!name.equals(previous)) {
+                    cacheChanged = true;
+                }
+            }
+        }
+        
+        onlineUuids.retainAll(current);
+        onlineUuids.addAll(current);
+        if (cacheChanged) {
+            CompletableFuture.runAsync(this::saveNameCache);
+        }
+        
+        Platform.runLater(() -> {
+            boolean changed = false;
+            for (PlayerRow row : playersData) {
+                boolean nowOnline = current.contains(row.uuid);
+                String cachedName = nameCache.get(row.uuid);
+                String newName = (cachedName != null && (row.name.isEmpty() || "Unknown".equals(row.name)))
+                        ? cachedName : row.name;
+                if (row.online != nowOnline || !newName.equals(row.name)) {
+                    row.online = nowOnline;
+                    row.name = newName;
+                    changed = true;
+                }
+            }
+            if (changed && playersTable != null) {
+                playersTable.refresh();
+            }
+        });
+    }
+
+    private void loadNameCache() {
+        try {
+            if (!Files.exists(nameCachePath)) return;
+            JsonNode node = objectMapper.readTree(
+                    new String(Files.readAllBytes(nameCachePath), StandardCharsets.UTF_8));
+            if (node == null || !node.isObject()) return;
+            java.util.Iterator<Map.Entry<String, JsonNode>> it = node.fields();
+            while (it.hasNext()) {
+                Map.Entry<String, JsonNode> e = it.next();
+                if (e.getValue().isTextual()) {
+                    nameCache.put(e.getKey(), e.getValue().asText());
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to load Arcanum player name cache", e);
+        }
+    }
+
+    private void saveNameCache() {
+        try {
+            Files.createDirectories(nameCachePath.getParent());
+            ObjectNode node = objectMapper.createObjectNode();
+            for (Map.Entry<String, String> e : nameCache.entrySet()) {
+                node.put(e.getKey(), e.getValue());
+            }
+            Files.write(nameCachePath,
+                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(node));
+        } catch (Exception e) {
+            LOG.warn("Failed to save Arcanum player name cache", e);
         }
     }
 
