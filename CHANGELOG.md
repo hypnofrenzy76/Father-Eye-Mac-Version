@@ -2,6 +2,49 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: map visuals — web portal up in attach mode (Web-09) + zoom-out "wave" eviction fixed (Map-03)
+
+- **Web-09: the browser surface at `:8765` (map included) was dead whenever
+  the panel ATTACHED to an externally-started server.** The in-process Web
+  Portal was started only from the `ServerLauncher` RUNNING state-sink, which
+  fires only when the panel OWNS the server (STARTING -> RUNNING). In the normal
+  attach flow (server started by `run.sh`, panel connects to the live bridge)
+  the launcher stays STOPPED and `markRunning()` is a documented no-op for
+  non-STARTING states, so the RUNNING sink never fired and the portal never came
+  up — every browser tab, the map included, was blank. The panel's own map
+  always worked once a bridge existed.
+  - Fix (`panel/.../App.java`, additive): start the portal on **bridge-handshake
+    success** — the true "bridge reachable" signal for BOTH panel-owned and
+    attached cases — via `webPortalLauncher.start(() -> pipeClient)`.
+    `WebPortalLauncher.start()` is idempotent, so the RUNNING sink's later call
+    for panel-owned servers stays a harmless no-op (no double-start, no 8765
+    bind conflict).
+  - Verified live in attach mode: portal logged "Web portal started (fed mode)
+    on 0.0.0.0:8765", `curl http://127.0.0.1:8765/` returned HTTP 200, and
+    `chunks_topic` flowed.
+
+- **Map-03: panel map chunks loaded then "disappeared in a wave" when zooming
+  out.** The rendered-tile cache (cap 1024) evicted by iterating a
+  `ConcurrentHashMap.keySet()` — hash order, not the "LRU" the comment claimed —
+  and dropped arbitrary tiles including on-screen ones. Zoomed out, the visible
+  chunk count exceeds the cap, so every newly-arrived tile evicted an on-screen
+  tile that was immediately re-requested, re-rendered, and re-evicted — an
+  infinite thrash whose hash-order churn is the "wave."
+  - Fix (`panel/.../view/MapPane.java`): new FX-thread `evictOverflowTiles()`
+    protects the visible chunk range plus a one-viewport margin (clamped `>= 1`
+    chunk so it is always at least as large as the draw/request `+/-1` pad — an
+    on-screen tile can never be evicted) and evicts only off-screen tiles,
+    farthest-from-viewport-centre first. If the visible set alone exceeds the
+    cap (extreme zoom-out) nothing is evicted — a viewport-bounded soft cap,
+    keep-what-you-see, no thrash. An `EVICT_BATCH=128` hysteresis amortises the
+    sort across a zoom-out fill burst.
+  - No portal change: the browser map keeps all tiles (no cache cap / eviction)
+    so it never had this bug; the VRAM-bounded panel divergence is intentional.
+
+- Both fixes triple-audited (Opus, 3 parallel agents). Built
+  `:panel:jpackageMacApp` and deployed to `/Applications/Father Eye.app`. No
+  version bump (bugfixes on 0.3.3-mac.1).
+
 ## 2026-06-14, 0.3.3-mac.1: Web Portal reuses the panel's bridge connection — empty browser panels fixed (Pnl-78/Web-08)
 
 - **Browser panels were empty because the bridge is single-client.** The

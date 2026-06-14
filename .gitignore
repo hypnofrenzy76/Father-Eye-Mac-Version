@@ -52,3 +52,7 @@ dist/*.zip
 dist/*.exe
 dist/*.dmg
 !dist/.gitkeep
+
+# Panel runtime disk tile cache (TileDiskCache). Generated at runtime when
+# the panel renders the map; not source.
+fathereye-tiles/

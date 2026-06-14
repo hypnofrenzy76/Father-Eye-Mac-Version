@@ -1031,6 +1031,20 @@ public final class App extends Application {
             // immediately so an already-running portal (reconnect) re-banners
             // without waiting. onBridgeConnected is a no-op when not running.
             webPortalWelcomeJson = buildWebPortalWelcomeJson(welcome, m, hasArcanum);
+            // Web-09 (2026-06-14): start the Web Portal on bridge-handshake
+            // success, NOT only on the launcher RUNNING transition. When the
+            // panel ATTACHES to a server someone else started (the normal
+            // marker-discovery flow), the launcher was never told to start, so
+            // its state stays STOPPED and markRunning() below is a no-op
+            // (ServerLauncher.markRunning ignores non-STARTING states by
+            // design). That left the RUNNING state-sink -- the only place the
+            // portal was started -- unfired, so the browser surface at :8765
+            // never came up in attach mode and every web panel (map included)
+            // was dead. The handshake is the true "bridge reachable" signal for
+            // BOTH the panel-owned and attached cases. start() is idempotent
+            // (no-op when already running), so the RUNNING state-sink's later
+            // start() call for panel-owned servers remains a harmless no-op.
+            webPortalLauncher.start(() -> pipeClient);
             webPortalLauncher.onBridgeConnected(webPortalWelcomeJson);
 
             // Pnl-44 (2026-04-26): bridge handshake is the real

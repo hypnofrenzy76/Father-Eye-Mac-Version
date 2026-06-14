@@ -78,6 +78,13 @@ public final class MapPane {
      *  headroom. 1024 tiles still cover ~8x the visible-viewport chunk
      *  count at zoom 4, so panning never visibly thrashes. */
     private static final int TILE_CACHE_LIMIT = 1024;
+    /** Map-03 (2026-06-14): eviction hysteresis. The viewport-aware eviction
+     *  pass (which allocates + sorts the off-screen tiles) only fires once the
+     *  cache is this many tiles over {@link #TILE_CACHE_LIMIT}, then trims back
+     *  to the cap in a single pass. This amortises the sort across a burst of
+     *  tile arrivals instead of paying O(n log n) on every single arrival
+     *  during a zoom-out fill. */
+    private static final int EVICT_BATCH = 128;
     /** Mac fork (audit 8): "needs redraw" flag set by tile-arrival /
      *  pan / zoom paths and consumed by an AnimationTimer at FX-pulse
      *  cadence. Replaces the per-tile Platform.runLater(redraw) flood
@@ -1277,18 +1284,85 @@ public final class MapPane {
         dirty.set(true);
         Platform.runLater(() -> {
             updateLoadingProgress();
-            // Bounded LRU eviction.
-            if (tileImages.size() > TILE_CACHE_LIMIT) {
-                int over = tileImages.size() - TILE_CACHE_LIMIT;
-                java.util.Iterator<Long> it = tileImages.keySet().iterator();
-                while (over-- > 0 && it.hasNext()) {
-                    Long k = it.next();
-                    it.remove();
-                    tileData.remove(k);
-                    tileVersions.remove(k);
-                }
-            }
+            evictOverflowTiles();
         });
+    }
+
+    /**
+     * Map-03 (2026-06-14): viewport-aware tile eviction. Must run on the FX
+     * thread (reads {@code centerX/centerZ/zoom/canvas}).
+     *
+     * <p>The previous eviction iterated {@code tileImages.keySet()} of a
+     * {@code ConcurrentHashMap} (hash order, NOT insertion/LRU order despite
+     * the "LRU" comment) and evicted blindly, including tiles currently on
+     * screen. When zoomed out, the visible chunk count can exceed the cache
+     * cap, so every newly-arrived tile evicted an arbitrary in-view tile —
+     * the user saw chunks load and then vanish "in a wave" as the eviction
+     * swept the map. Each evicted in-view chunk was then re-requested and
+     * re-evicted, thrashing forever.
+     *
+     * <p>Fix: never evict tiles inside the current visible chunk range plus a
+     * one-screen margin; when over the cap, evict ONLY off-screen tiles,
+     * furthest-from-viewport-centre first. If the visible set alone exceeds
+     * the cap (extreme zoom-out) nothing is evicted that frame — we keep what
+     * the user can see rather than thrash, and the cache is simply allowed to
+     * exceed the soft cap until the user zooms/pans back in.
+     */
+    private void evictOverflowTiles() {
+        int size = tileImages.size();
+        // Hysteresis: only do the (allocating + sorting) eviction pass once we
+        // are a batch over the cap, then evict down to the cap in one go. This
+        // amortises the O(n log n) sort across many tile arrivals during a
+        // zoom-out flood instead of paying it on every single arrival.
+        if (size <= TILE_CACHE_LIMIT + EVICT_BATCH) return;
+
+        double w = canvas.getWidth();
+        double h = canvas.getHeight();
+        // Visible chunk range with a one-viewport margin so panning a little
+        // never drops a just-evicted tile back into view. The margin is
+        // clamped to at least 1 chunk so the protected range is ALWAYS at
+        // least as large as redraw()'s and the request fan-out's ±1 pad — an
+        // on-screen tile can therefore never be evicted, even at extreme zoom.
+        double viewBlocksX = (w > 0 ? w : 800) / zoom;
+        double viewBlocksZ = (h > 0 ? h : 600) / zoom;
+        int marginX = Math.max(1, (int) Math.ceil(viewBlocksX / 16.0));
+        int marginZ = Math.max(1, (int) Math.ceil(viewBlocksZ / 16.0));
+        int keepMinCx = (int) Math.floor((centerX - viewBlocksX / 2.0) / 16.0) - marginX;
+        int keepMaxCx = (int) Math.ceil((centerX + viewBlocksX / 2.0) / 16.0) + marginX;
+        int keepMinCz = (int) Math.floor((centerZ - viewBlocksZ / 2.0) / 16.0) - marginZ;
+        int keepMaxCz = (int) Math.ceil((centerZ + viewBlocksZ / 2.0) / 16.0) + marginZ;
+
+        double centerCx = centerX / 16.0;
+        double centerCz = centerZ / 16.0;
+
+        // Collect only evictable (off-screen) tiles, with their squared
+        // distance from the viewport centre so we drop the farthest first.
+        java.util.ArrayList<long[]> evictable = new java.util.ArrayList<>(size);
+        for (Long key : tileImages.keySet()) {
+            // Inverse of MapData.chunkKey: high 32 bits = chunkX, low = chunkZ.
+            int cx = (int) (key >> 32);
+            int cz = (int) (key.longValue());
+            if (cx >= keepMinCx && cx <= keepMaxCx && cz >= keepMinCz && cz <= keepMaxCz) {
+                continue; // protected: on-screen (+margin)
+            }
+            double dx = cx - centerCx;
+            double dz = cz - centerCz;
+            long dist2 = (long) (dx * dx + dz * dz);
+            evictable.add(new long[]{dist2, key});
+        }
+        if (evictable.isEmpty()) return; // everything cached is on-screen
+
+        int over = size - TILE_CACHE_LIMIT;
+        if (over <= 0) return;
+        // Farthest-from-centre first.
+        evictable.sort((a, b) -> Long.compare(b[0], a[0]));
+        int toEvict = Math.min(over, evictable.size());
+        for (int i = 0; i < toEvict; i++) {
+            Long k = evictable.get(i)[1];
+            tileImages.remove(k);
+            tileData.remove(k);
+            tileVersions.remove(k);
+        }
     }
 
     private void redraw() {
