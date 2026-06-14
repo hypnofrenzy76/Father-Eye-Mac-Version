@@ -47,6 +47,38 @@ done
 LOG="$DEST/backup.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG" >&2; }
 
+# ---- determinate progress -------------------------------------------------
+# Mirrors fe-backup.sh: a binary-safe Python passthrough counter emits
+# FE_PROGRESS=<int 0-100> on stderr (merged into the panel/web job stream)
+# as bytes flow. For rollback we count COMPRESSED bytes read from each
+# archive, which is the only cheap, exact denominator available, and scale
+# into the band [start,end] for the current stage.
+bytes_in() {
+    local total="$1" start="$2" end="$3"
+    if ! command -v python3 >/dev/null 2>&1 || [ "${total:-0}" -le 0 ]; then
+        cat
+        return
+    fi
+    python3 - "$total" "$start" "$end" <<'PYEOF'
+import sys
+total = int(sys.argv[1]); start = int(sys.argv[2]); end = int(sys.argv[3])
+out = sys.stdout.buffer; inp = sys.stdin.buffer
+seen = 0; last = -1; span = max(1, end - start)
+while True:
+    chunk = inp.read(1 << 16)
+    if not chunk:
+        break
+    out.write(chunk); seen += len(chunk)
+    pct = start + int(span * min(seen, total) / total)
+    if pct != last:
+        last = pct
+        sys.stderr.write("FE_PROGRESS=%d\n" % pct); sys.stderr.flush()
+out.flush()
+PYEOF
+}
+file_bytes() { [ -f "$1" ] && stat -f '%z' "$1" 2>/dev/null || echo 0; }
+echo "FE_PROGRESS=0"
+
 case "$SCOPE" in
     world|playerdata|both) ;;
     *) echo "FATAL: --scope must be world|playerdata|both" >&2; exit 1 ;;
@@ -107,6 +139,7 @@ if [ "$SCOPE" = playerdata ] || [ "$SCOPE" = both ]; then
     snapshot_player || { log "FAILED safety snapshot playerdata"; rm -rf "$SAFETY"; exit 2; }
 fi
 log "ROLLBACK safety snapshot complete"
+echo "FE_PROGRESS=20"
 
 # ---- restore helpers (extract-to-temp then atomic swap) ---------------
 # Restore the world body (everything except player parts) from world.tar.gz.
@@ -115,7 +148,8 @@ restore_world() {
     [ -f "$arc" ] || { log "FAILED missing $arc"; return 2; }
     local tmp="$SERVER/.fe-restore-world.$STAMP"
     rm -rf "$tmp"; mkdir -p "$tmp" || return 2
-    if ! gzip -dc "$arc" | tar -xf - -C "$tmp" 2>>"$LOG"; then
+    bytes_in "$(file_bytes "$arc")" "${1:-20}" "${2:-80}" < "$arc" | gzip -dc | tar -xf - -C "$tmp" 2>>"$LOG"
+    if [ "${PIPESTATUS[0]}" -ne 0 ] || [ "${PIPESTATUS[1]}" -ne 0 ] || [ "${PIPESTATUS[2]}" -ne 0 ]; then
         log "FAILED extract world"; rm -rf "$tmp"; return 2
     fi
     # Swap each top-level world entry that is NOT a player part.
@@ -141,7 +175,8 @@ restore_player() {
     [ -f "$arc" ] || { log "FAILED missing $arc"; return 2; }
     local tmp="$SERVER/.fe-restore-player.$STAMP"
     rm -rf "$tmp"; mkdir -p "$tmp" || return 2
-    if ! gzip -dc "$arc" | tar -xf - -C "$tmp" 2>>"$LOG"; then
+    bytes_in "$(file_bytes "$arc")" "${1:-80}" "${2:-99}" < "$arc" | gzip -dc | tar -xf - -C "$tmp" 2>>"$LOG"
+    if [ "${PIPESTATUS[0]}" -ne 0 ] || [ "${PIPESTATUS[1]}" -ne 0 ] || [ "${PIPESTATUS[2]}" -ne 0 ]; then
         log "FAILED extract playerdata"; rm -rf "$tmp"; return 2
     fi
     local old="$SERVER/.fe-old-player.$STAMP"
@@ -157,11 +192,15 @@ restore_player() {
 }
 
 RC=0
-if [ "$SCOPE" = world ] || [ "$SCOPE" = both ]; then
-    restore_world || RC=2
-fi
-if [ "$RC" -eq 0 ] && { [ "$SCOPE" = playerdata ] || [ "$SCOPE" = both ]; }; then
-    restore_player || RC=2
+# Bands: world body gets the larger slice; when both run, world is
+# 20->80 and player is 80->99; single-scope spans 20->99.
+if [ "$SCOPE" = world ]; then
+    restore_world 20 99 || RC=2
+elif [ "$SCOPE" = playerdata ]; then
+    restore_player 20 99 || RC=2
+else
+    restore_world 20 80 || RC=2
+    [ "$RC" -eq 0 ] && { restore_player 80 99 || RC=2; }
 fi
 
 if [ "$RC" -ne 0 ]; then
@@ -171,5 +210,6 @@ if [ "$RC" -ne 0 ]; then
 fi
 
 log "ROLLBACK OK id=$ID scope=$SCOPE safety=$SAFETY"
+echo "FE_PROGRESS=100"
 echo "ROLLBACK_OK safety=$SAFETY"
 exit 0

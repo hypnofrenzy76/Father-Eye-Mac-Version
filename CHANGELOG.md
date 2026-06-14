@@ -2,6 +2,44 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: region-selective rollback + disk-backed pre-gen chunks (Bkp-02, Map-02)
+
+- **Region-selective rollback.** Drag a rubber-band rectangle over the map and
+  restore ONLY the Anvil region files (`.mca`, one per 32x32-chunk /
+  512x512-block region) it covers, for the current dimension, from a chosen
+  structured backup. The rest of the live world is left untouched — the surgical
+  complement to the whole-world rollback. Implemented identically on BOTH the
+  JavaFX panel and the browser portal (100%-parity rule).
+- **New `fe-region-rollback.sh`** mirrors `fe-rollback.sh`'s safety model:
+  refuses to run while the server is up (RCON probe), takes a pre-rollback
+  safety snapshot of exactly the `.mca` files it will overwrite into
+  `pre-region-rollback-<ts>/`, and swaps each region atomically
+  (move-old-aside → move-new-in → delete-old) so an interrupted run never leaves
+  a half-written region. Region tokens are validated as signed integers
+  (`rx,rz`) so no token can widen the tar member-selection glob; the dimension →
+  region-folder mapping matches `DiskChunkRenderer`.
+- **Job wiring.** `BackupOps.startRegionRollback` (panel) and the
+  `BackupManager` twin (portal) validate the backup id, dimension, and every
+  region token before claiming the single job slot and shelling the script, so a
+  region rollback can never run alongside another backup/rollback.
+- **Rubber-band UI.** `MapPane` (panel) and the portal map JS both draw the
+  selection overlay, convert screen → world → region coordinates
+  (`floor(blockX/512)`), confirm, and start the rollback through a
+  server-stopped gate.
+- **Map-02 disk-backed pre-gen chunks.** New `DiskChunkRenderer` +
+  `RegionIndexHandler` read `.mca` files straight off disk so the map shows
+  pre-generated terrain the live server has not currently loaded — which is what
+  makes selecting and rolling back visible terrain meaningful.
+- **Vetting.** `:webportal:build :panel:build` and `:webportal:test :panel:test`
+  green. **Triple Opus audit** before push: (1) `MapPane.finishRegionSelection`
+  was doing disk I/O (`BackupOps.list()` over the external volume) on the
+  JavaFX thread — moved to a background thread with an FX-thread dialog
+  continuation; (2) the portal had **no determinate progress** (its `runAsync`
+  never parsed `FE_PROGRESS` and its `Job` had no `percent`), a parity break —
+  the portal now parses `FE_PROGRESS` (monotonic, clamped), carries a `percent`
+  field, and renders a determinate `.bk-bar` in the job panel exactly like the
+  panel; (3) a comment-clarity nit, applied.
+
 ## 2026-06-14, 0.3.3-mac.1: web panel blank-tabs fix + dedicated Backups/Rollback tabs (Web-05, Web-06)
 
 - **All web tabs blank, no console.** The browser portal showed nothing on

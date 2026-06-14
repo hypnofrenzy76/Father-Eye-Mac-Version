@@ -13,12 +13,14 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.ToggleButton;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.PixelWriter;
 import javafx.scene.image.WritableImage;
@@ -26,6 +28,7 @@ import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
@@ -109,6 +112,15 @@ public final class MapPane {
     private final Canvas canvas = new Canvas(800, 600);
     private final BorderPane root = new BorderPane();
     private final ChoiceBox<String> dimChoice = new ChoiceBox<>();
+    /** Pnl-72: "Go to player" selector. Populated from the live
+     *  players_topic snapshot; selecting a name centres the viewport on
+     *  that player and switches dimension if they're in a different one.
+     *  The first item is a placeholder prompt so no real player is the
+     *  default selection. */
+    private final ChoiceBox<String> playerChoice = new ChoiceBox<>();
+    private static final String PLAYER_PROMPT = "Go to player\u2026";
+    /** Pnl-73: toggles the rubber-band region-rollback selection mode. */
+    private final ToggleButton regionRollbackToggle = new ToggleButton("Region rollback");
     private final Label coordsLabel = new Label("(--,--)");
 
     /** Pre-rendered 16×16 chunk Images. ConcurrentHashMap so the IPC thread
@@ -254,6 +266,37 @@ public final class MapPane {
     private double dragStartCenterX, dragStartCenterZ;
     private boolean dragging = false;
 
+    /** Pnl-73 (2026-06-14): region-rollback rubber-band selection. When
+     *  {@link #regionSelectMode} is on, a left-drag draws a selection
+     *  rectangle (in screen px) instead of panning; on release the box is
+     *  converted to the set of 512x512-block Anvil region coordinates it
+     *  covers and an operator-confirmed region rollback is offered. This
+     *  is the panel twin of the WebPortal map rubber-band, kept in
+     *  lockstep under the 100% surface-parity rule. */
+    private boolean regionSelectMode = false;
+    private boolean regionSelecting = false;
+    private double regionSelStartX, regionSelStartZ;
+    private double regionSelCurX, regionSelCurZ;
+    /** Supplies region-rollback collaborators (BackupOps + backup list +
+     *  stopped-server gate). Null until wired by App, in which case the
+     *  region-rollback toggle stays hidden. */
+    private RegionRollbackHooks regionRollback;
+
+    /**
+     * Pnl-73: collaborators the MapPane needs to drive a region rollback,
+     * supplied by App so the view stays free of launcher/backup deps.
+     */
+    public interface RegionRollbackHooks {
+        /** True when the server is stopped and a rollback is permitted. */
+        boolean serverStopped();
+        /** True when a backup/rollback job is already running. */
+        boolean jobRunning();
+        /** Structured backup ids (newest first) available to roll back to. */
+        java.util.List<String> backupIds();
+        /** Start the region rollback; returns false if rejected. */
+        boolean startRegionRollback(String backupId, String dim, java.util.List<String> regions);
+    }
+
     /** Last user-interaction wall time (ms). Used to debounce RPC fan-out. */
     private final AtomicLong lastInteractionMs = new AtomicLong(0);
     /** Whether a deferred-request task is already queued.
@@ -265,6 +308,13 @@ public final class MapPane {
      *  flag, spawning two debounce daemons that each fired a
      *  duplicate chunk_tile RPC batch. CAS makes the gate atomic. */
     private final java.util.concurrent.atomic.AtomicBoolean requestTaskPending =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** Map-02 (2026-06-14): at most one outstanding region_index RPC at
+     *  a time. A pan storm would otherwise fire a disk-enumeration RPC
+     *  per debounce tick; one in flight is enough to keep the viewport
+     *  filling with disk-backed pre-gen chunks. Reset in the response
+     *  handler (success OR error) so a dropped response can't wedge it. */
+    private final java.util.concurrent.atomic.AtomicBoolean regionIndexInFlight =
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private volatile PipeClient pipeClient;
@@ -346,6 +396,15 @@ public final class MapPane {
                     return;
                 }
             }
+            // Pnl-73: in region-select mode a primary-button press begins a
+            // rubber-band rectangle rather than a pan.
+            if (regionSelectMode && e.getButton() == MouseButton.PRIMARY) {
+                regionSelecting = true;
+                regionSelStartX = regionSelCurX = e.getX();
+                regionSelStartZ = regionSelCurZ = e.getY();
+                redraw();
+                return;
+            }
             dragStartX = e.getX();
             dragStartZ = e.getY();
             dragStartCenterX = centerX;
@@ -353,6 +412,12 @@ public final class MapPane {
             dragging = true;
         });
         canvas.setOnMouseDragged(e -> {
+            if (regionSelecting) {
+                regionSelCurX = e.getX();
+                regionSelCurZ = e.getY();
+                redraw();
+                return;
+            }
             if (!dragging) return;
             centerX = dragStartCenterX - (e.getX() - dragStartX) / zoom;
             centerZ = dragStartCenterZ - (e.getY() - dragStartZ) / zoom;
@@ -360,6 +425,14 @@ public final class MapPane {
             redraw();
         });
         canvas.setOnMouseReleased(e -> {
+            if (regionSelecting) {
+                regionSelecting = false;
+                regionSelCurX = e.getX();
+                regionSelCurZ = e.getY();
+                finishRegionSelection();
+                redraw();
+                return;
+            }
             dragging = false;
             // Trigger a deferred chunk fan-out for the final viewport.
             scheduleTileRequests();
@@ -385,32 +458,7 @@ public final class MapPane {
         dimChoice.getSelectionModel().select(0);
         dimChoice.setOnAction(e -> {
             String s = dimChoice.getValue();
-            if (s != null && !s.equals(currentDim)) {
-                // Pnl-53 (audit fix): bump dimGeneration BEFORE
-                // mutating state. Any in-flight warm thread checks
-                // the gen and aborts before clobbering the new dim.
-                dimGeneration.incrementAndGet();
-                currentDim = s;
-                tileImages.clear();
-                tileData.clear();
-                tileVersions.clear();
-                requested.clear();
-                rejectedChunks.clear();
-                // Pnl-71: keys are (cx, cz) only; stale entries from the
-                // previous dim must not suppress viewport requests here.
-                unrenderableChunks = java.util.Collections.emptySet();
-                expectedChunksThisDim = 0;
-                chunkBboxMinCx = Integer.MAX_VALUE;
-                chunkBboxMaxCx = Integer.MIN_VALUE;
-                chunkBboxMinCz = Integer.MAX_VALUE;
-                chunkBboxMaxCz = Integer.MIN_VALUE;
-                updateLoadingProgress();
-                // Pnl-53: warm the new dim's tiles from the disk
-                // cache so the user instantly sees their previous
-                // exploration of that dim.
-                warmCacheFromDisk(currentDim);
-                redraw();
-            }
+            if (s != null && !s.equals(currentDim)) switchDimension(s);
         });
 
         Button center0 = new Button("Center (0,0)");
@@ -420,6 +468,20 @@ public final class MapPane {
         // from any player and would otherwise be invisible.
         Button fitAll = new Button("Fit all");
         fitAll.setOnAction(e -> fitAllLoadedChunks());
+
+        // Pnl-72: jump the viewport to a chosen player. The list is
+        // refreshed from each players_topic snapshot (refreshPlayerChoice).
+        // Selecting a name centres on that player and, if they're in
+        // another dimension, switches to it first so their chunks load.
+        playerChoice.getItems().add(PLAYER_PROMPT);
+        playerChoice.getSelectionModel().selectFirst();
+        playerChoice.setOnAction(e -> {
+            String sel = playerChoice.getSelectionModel().getSelectedItem();
+            if (sel == null || PLAYER_PROMPT.equals(sel)) return;
+            goToPlayer(sel);
+            // Reset to the prompt so re-selecting the same name fires again.
+            playerChoice.getSelectionModel().selectFirst();
+        });
 
         // Pnl-52: loadingSpinner + loadingLabel give the operator an
         // explicit animation + percentage indicator. Sits in the
@@ -432,7 +494,22 @@ public final class MapPane {
         loadingSpinner.setMaxSize(16, 16);
         loadingSpinner.setVisible(false);
         loadingSpinner.setManaged(false);
-        HBox toolbar = new HBox(8, new Label("Dim:"), dimChoice, center0, fitAll,
+
+        // Pnl-73: region-rollback toggle. Hidden until App wires the hooks
+        // (setRegionRollbackHooks); turning it on switches the left-drag
+        // gesture from pan to rubber-band region selection.
+        regionRollbackToggle.setVisible(false);
+        regionRollbackToggle.setManaged(false);
+        regionRollbackToggle.setOnAction(e -> {
+            regionSelectMode = regionRollbackToggle.isSelected();
+            if (!regionSelectMode) {
+                regionSelecting = false;
+                redraw();
+            }
+        });
+
+        HBox toolbar = new HBox(8, new Label("Dim:"), dimChoice, center0, fitAll, playerChoice,
+                regionRollbackToggle,
                 new Label(" Wheel = zoom · drag = pan · L-click marker = info · R-click marker = actions "),
                 loadingSpinner,
                 loadingLabel,
@@ -600,7 +677,98 @@ public final class MapPane {
         // window so the map doesn't accumulate ex-members forever.
         long retentionDeadline = now - OFFLINE_PLAYER_RETAIN_MS;
         players.values().removeIf(pe -> !pe.online && pe.lastSeenMs < retentionDeadline);
-        Platform.runLater(this::redraw);
+        Platform.runLater(() -> {
+            refreshPlayerChoice();
+            redraw();
+        });
+    }
+
+    /**
+     * Pnl-72: switch the rendered dimension and reset all per-dim view
+     * state. Extracted from the dimChoice handler so {@link #goToPlayer}
+     * can reuse the exact same teardown when a target player is in a
+     * different dimension. No-op if already on {@code dim}.
+     */
+    private void switchDimension(String dim) {
+        if (dim == null || dim.equals(currentDim)) return;
+        // Pnl-53 (audit fix): bump dimGeneration BEFORE mutating state.
+        // Any in-flight warm thread checks the gen and aborts before
+        // clobbering the new dim.
+        dimGeneration.incrementAndGet();
+        currentDim = dim;
+        tileImages.clear();
+        tileData.clear();
+        tileVersions.clear();
+        requested.clear();
+        rejectedChunks.clear();
+        unrenderableChunks = java.util.Collections.emptySet();
+        expectedChunksThisDim = 0;
+        chunkBboxMinCx = Integer.MAX_VALUE;
+        chunkBboxMaxCx = Integer.MIN_VALUE;
+        chunkBboxMinCz = Integer.MAX_VALUE;
+        chunkBboxMaxCz = Integer.MIN_VALUE;
+        updateLoadingProgress();
+        // Keep the dim selector in sync when the switch was driven by
+        // the player selector rather than the dim ChoiceBox itself.
+        if (!dim.equals(dimChoice.getValue())) {
+            if (!dimChoice.getItems().contains(dim)) dimChoice.getItems().add(dim);
+            dimChoice.getSelectionModel().select(dim);
+        }
+        warmCacheFromDisk(currentDim);
+        redraw();
+    }
+
+    /**
+     * Pnl-72: rebuild the "Go to player" selector's item list from the
+     * current marker map. Online players first (alphabetical), then
+     * offline ones tagged "(offline)". Called on the FX thread after
+     * every players_topic snapshot. Preserves the placeholder prompt as
+     * the first, always-selected entry.
+     */
+    private void refreshPlayerChoice() {
+        java.util.List<String> online = new java.util.ArrayList<>();
+        java.util.List<String> offline = new java.util.ArrayList<>();
+        for (PlayerEntry pe : players.values()) {
+            PlayerMarker m = pe.marker;
+            if (m == null) continue;
+            if (pe.online) online.add(m.name);
+            else offline.add(m.name + " (offline)");
+        }
+        online.sort(String.CASE_INSENSITIVE_ORDER);
+        offline.sort(String.CASE_INSENSITIVE_ORDER);
+        java.util.List<String> items = new java.util.ArrayList<>();
+        items.add(PLAYER_PROMPT);
+        items.addAll(online);
+        items.addAll(offline);
+        if (items.equals(playerChoice.getItems())) return;
+        playerChoice.getItems().setAll(items);
+        playerChoice.getSelectionModel().selectFirst();
+    }
+
+    /**
+     * Pnl-72: centre the viewport on the named player's last-known
+     * position, switching dimension first if they're not in the one
+     * currently rendered. {@code label} is the ChoiceBox text, which may
+     * carry a trailing " (offline)" tag that we strip before matching.
+     */
+    private void goToPlayer(String label) {
+        if (label == null) return;
+        String name = label.endsWith(" (offline)")
+                ? label.substring(0, label.length() - " (offline)".length())
+                : label;
+        PlayerMarker target = null;
+        for (PlayerEntry pe : players.values()) {
+            PlayerMarker m = pe.marker;
+            if (m != null && name.equals(m.name)) { target = m; break; }
+        }
+        if (target == null) return;
+        if (target.dimensionId != null && !target.dimensionId.equals(currentDim)) {
+            switchDimension(target.dimensionId);
+        }
+        centerX = target.x;
+        centerZ = target.z;
+        noteInteraction();
+        redraw();
     }
 
     /**
@@ -1193,6 +1361,185 @@ public final class MapPane {
             }
             playerHitRects.put(p.uuid, new BoundingBox(sx - 14, sy - 14, 28, 28));
         }
+
+        // Pnl-73: region-rollback rubber-band overlay. Draw both the raw
+        // drag rectangle and the snapped 512-block region grid it covers so
+        // the operator sees exactly which .mca tiles will be rolled back.
+        if (regionSelectMode && regionSelecting) {
+            drawRegionSelectionOverlay(g, halfW, halfH);
+        }
+    }
+
+    /**
+     * Pnl-73: paint the rubber-band selection and the region tiles it
+     * covers. The selection rectangle is in screen px; the snapped region
+     * cells are computed in world space (512-block regions) and projected
+     * back to screen so the highlight aligns with the .mca grid exactly.
+     */
+    private void drawRegionSelectionOverlay(GraphicsContext g, double halfW, double halfH) {
+        double x0 = Math.min(regionSelStartX, regionSelCurX);
+        double y0 = Math.min(regionSelStartZ, regionSelCurZ);
+        double x1 = Math.max(regionSelStartX, regionSelCurX);
+        double y1 = Math.max(regionSelStartZ, regionSelCurZ);
+
+        // Snapped region cells (world 512-block grid) projected to screen.
+        int[] box = selectionToRegionBox();
+        if (box != null) {
+            double cell = 512.0 * zoom;
+            g.setFill(Color.rgb(220, 80, 80, 0.18));
+            g.setStroke(Color.rgb(255, 120, 120, 0.7));
+            g.setLineWidth(1);
+            for (int rz = box[1]; rz <= box[3]; rz++) {
+                for (int rx = box[0]; rx <= box[2]; rx++) {
+                    double sx = (rx * 512 - centerX) * zoom + halfW;
+                    double sy = (rz * 512 - centerZ) * zoom + halfH;
+                    g.fillRect(sx, sy, cell, cell);
+                    g.strokeRect(sx + 0.5, sy + 0.5, cell, cell);
+                }
+            }
+        }
+
+        // Raw drag rectangle on top.
+        g.setStroke(Color.rgb(255, 220, 120, 0.95));
+        g.setLineWidth(1.5);
+        g.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+    }
+
+    /**
+     * Pnl-73: convert the current rubber-band rectangle (screen px) into an
+     * inclusive region-coordinate box {@code [minRx, minRz, maxRx, maxRz]}
+     * on the 512-block Anvil grid, or null if the rectangle is degenerate.
+     */
+    private int[] selectionToRegionBox() {
+        double sx0 = Math.min(regionSelStartX, regionSelCurX);
+        double sy0 = Math.min(regionSelStartZ, regionSelCurZ);
+        double sx1 = Math.max(regionSelStartX, regionSelCurX);
+        double sy1 = Math.max(regionSelStartZ, regionSelCurZ);
+        // Ignore an accidental click (no real drag).
+        if (sx1 - sx0 < 2 && sy1 - sy0 < 2) return null;
+        double halfW = canvas.getWidth() / 2.0;
+        double halfH = canvas.getHeight() / 2.0;
+        double wx0 = centerX + (sx0 - halfW) / zoom;
+        double wz0 = centerZ + (sy0 - halfH) / zoom;
+        double wx1 = centerX + (sx1 - halfW) / zoom;
+        double wz1 = centerZ + (sy1 - halfH) / zoom;
+        int minRx = (int) Math.floor(wx0 / 512.0);
+        int minRz = (int) Math.floor(wz0 / 512.0);
+        int maxRx = (int) Math.floor(wx1 / 512.0);
+        int maxRz = (int) Math.floor(wz1 / 512.0);
+        return new int[]{minRx, minRz, maxRx, maxRz};
+    }
+
+    /**
+     * Pnl-73: wire the region-rollback collaborators and reveal the toggle.
+     * Called by App with a {@link RegionRollbackHooks} bound to BackupOps,
+     * the structured-backup list, and the stopped-server gate. Passing null
+     * hides the toggle (e.g. if backups are unavailable).
+     */
+    public void setRegionRollbackHooks(RegionRollbackHooks hooks) {
+        this.regionRollback = hooks;
+        Platform.runLater(() -> {
+            boolean show = hooks != null;
+            regionRollbackToggle.setVisible(show);
+            regionRollbackToggle.setManaged(show);
+        });
+    }
+
+    /**
+     * Pnl-73: on rubber-band release, resolve the covered region tiles and
+     * offer a confirmed region rollback. Validates the stopped-server gate
+     * and job state up front, then prompts for the backup id and a final
+     * confirmation before invoking {@link RegionRollbackHooks}.
+     */
+    private void finishRegionSelection() {
+        int[] box = selectionToRegionBox();
+        if (regionRollback == null || box == null) return;
+
+        java.util.List<String> regions = new java.util.ArrayList<>();
+        for (int rz = box[1]; rz <= box[3]; rz++) {
+            for (int rx = box[0]; rx <= box[2]; rx++) {
+                regions.add(rx + "," + rz);
+            }
+        }
+        if (regions.isEmpty()) return;
+
+        if (!regionRollback.serverStopped()) {
+            info("The server must be STOPPED before a region rollback. Stop it, then retry.");
+            return;
+        }
+        if (regionRollback.jobRunning()) {
+            info("A backup or rollback is already running.");
+            return;
+        }
+        // Enumerate available backups OFF the FX thread: backupIds() lists
+        // the external backup directory (disk I/O) and would otherwise
+        // freeze the map on a slow/dismounted drive. Resume the dialog on
+        // the FX thread once the list is in hand.
+        final int[] boxF = box;
+        new Thread(() -> {
+            java.util.List<String> ids = regionRollback.backupIds();
+            Platform.runLater(() -> showRegionRollbackDialog(boxF, regions, ids));
+        }, "FatherEye-RegionRollback-List").start();
+    }
+
+    /**
+     * Pnl-73: FX-thread continuation of {@link #finishRegionSelection}.
+     * Given the resolved region box, the region token list, and the
+     * available backup ids (fetched off-thread), prompt for a backup and a
+     * final confirmation before invoking the region rollback.
+     */
+    private void showRegionRollbackDialog(int[] box, java.util.List<String> regions,
+                                          java.util.List<String> ids) {
+        if (regionRollback == null) return;
+        if (ids == null || ids.isEmpty()) {
+            info("No structured backups are available to roll back to.");
+            return;
+        }
+
+        // Pick the backup to restore these regions from.
+        ChoiceBox<String> idChoice = new ChoiceBox<>();
+        idChoice.getItems().addAll(ids);
+        idChoice.getSelectionModel().selectFirst();
+
+        Alert pick = new Alert(Alert.AlertType.CONFIRMATION);
+        pick.setTitle("Region rollback");
+        pick.setHeaderText(regions.size() + " region file"
+                + (regions.size() == 1 ? "" : "s") + " selected in " + currentDim
+                + "\nRegions x[" + box[0] + ".." + box[2] + "] z[" + box[1] + ".." + box[3] + "]");
+        VBox content = new VBox(8,
+                new Label("Restore these .mca region files from backup:"),
+                idChoice,
+                wrappedWarn("Only the selected region files are overwritten; the rest of the "
+                        + "world is left untouched. A pre-rollback safety snapshot of the affected "
+                        + "regions is taken automatically. The server must stay stopped."));
+        content.setPadding(new Insets(4));
+        pick.getDialogPane().setContent(content);
+        Optional<ButtonType> res = pick.showAndWait();
+        if (res.isEmpty() || res.get() != ButtonType.OK) return;
+        String backupId = idChoice.getSelectionModel().getSelectedItem();
+        if (backupId == null) return;
+
+        boolean started = regionRollback.startRegionRollback(backupId, currentDim, regions);
+        if (!started) {
+            info("Could not start region rollback (a job may be running or inputs invalid).");
+        } else {
+            info("Region rollback started for " + regions.size() + " region file"
+                    + (regions.size() == 1 ? "" : "s") + ". Watch the Rollback tab for progress.");
+        }
+    }
+
+    private static Label wrappedWarn(String text) {
+        Label l = new Label(text);
+        l.setWrapText(true);
+        l.setMaxWidth(420);
+        l.setStyle("-fx-text-fill: #b06030;");
+        return l;
+    }
+
+    private void info(String msg) {
+        Alert a = new Alert(Alert.AlertType.INFORMATION, msg, ButtonType.OK);
+        a.setHeaderText(null);
+        a.showAndWait();
     }
 
     /**
@@ -1529,6 +1876,73 @@ public final class MapPane {
         }
         // Pnl-52: keep the toolbar progress label in sync.
         updateLoadingProgress();
+
+        // Map-02 (2026-06-14): also enumerate chunks that exist ON DISK
+        // in this viewport but are NOT resident in the live world (Chunky
+        // pre-gen). chunks_topic only ever reports loaded chunks, so
+        // without this a fully pre-generated world would only ever show
+        // the handful of chunks currently ticking. region_index returns
+        // the disk coords; each then flows through the normal requestChunk
+        // path, which ChunkTileHandler serves from the disk renderer.
+        requestRegionIndex(minCx, minCz, maxCx, maxCz);
+    }
+
+    /**
+     * Map-02 (2026-06-14): ask the bridge which chunks exist on disk in
+     * the given viewport box and queue chunk_tile fetches for any we do
+     * not already have. Debounced via {@link #regionIndexInFlight} so a
+     * pan storm issues at most one outstanding region_index at a time.
+     * Disk-backed tiles fill in behind the live-chunk fan-out; their
+     * surfaceArgb is identical to a live render so the two are visually
+     * seamless.
+     */
+    private void requestRegionIndex(int minCx, int minCz, int maxCx, int maxCz) {
+        if (pipeClient == null || pipeClient.isClosed()) return;
+        if (!regionIndexInFlight.compareAndSet(false, true)) return;
+        final String dimAtRequest = currentDim;
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("dim", dimAtRequest);
+            args.put("minCx", minCx);
+            args.put("minCz", minCz);
+            args.put("maxCx", maxCx);
+            args.put("maxCz", maxCz);
+            pipeClient.sendRequest("region_index", args)
+                    .orTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .whenComplete((node, err) -> {
+                regionIndexInFlight.set(false);
+                if (err != null || node == null) return;
+                JsonNode result = node.get("result");
+                if (result == null) return;
+                // The bridge may not know this op (older bridge); the
+                // dispatcher returns an error in that case, handled above.
+                int[] flat = nodeToInts(result.path("chunks"));
+                if (flat == null || flat.length < 2) return;
+                final int[] coords = flat;
+                Platform.runLater(() -> {
+                    // Ignore a late response for a dim we've since left.
+                    if (!dimAtRequest.equals(currentDim)) return;
+                    if (pipeClient == null || pipeClient.isClosed()) return;
+                    long now = System.currentTimeMillis();
+                    int budget = CHUNKS_TOPIC_FETCH_BUDGET;
+                    for (int i = 0; i + 1 < coords.length; i += 2) {
+                        int cx = coords[i];
+                        int cz = coords[i + 1];
+                        long key = MapData.chunkKey(cx, cz);
+                        if (tileImages.containsKey(key) || requested.containsKey(key)) continue;
+                        Long rejectedAt = rejectedChunks.get(key);
+                        if (rejectedAt != null && (now - rejectedAt) < REJECTED_RETRY_MS) continue;
+                        requested.put(key, now);
+                        requestChunk(cx, cz, 0);
+                        if (--budget <= 0) break;
+                    }
+                    updateLoadingProgress();
+                });
+            });
+        } catch (Throwable t) {
+            regionIndexInFlight.set(false);
+            LOG.warn("region_index request failed", t);
+        }
     }
 
     /**

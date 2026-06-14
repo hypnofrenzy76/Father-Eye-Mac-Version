@@ -2,6 +2,7 @@ package io.fathereye.bridge.rpc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import io.fathereye.bridge.profiler.ChunkSurfaceCache;
+import io.fathereye.bridge.profiler.DiskChunkRenderer;
 import io.fathereye.bridge.profiler.TickStateMirror;
 import io.fathereye.mapcore.api.ChunkTile;
 import net.minecraft.server.MinecraftServer;
@@ -79,11 +80,33 @@ public final class ChunkTileHandler {
         }
 
         // Miss: hand the chunk to the tick-thread mirror's priority
-        // queue and tell the panel "not yet". The mirror dedupes, so
-        // request floods for the same chunk cost one queue entry.
+        // queue so a live (loaded) chunk fills with up-to-date pixels.
+        // The mirror dedupes, so request floods for the same chunk cost
+        // one queue entry.
         TickStateMirror.requestRender(dim, cx, cz);
         missEnqueued.incrementAndGet();
         maybeLogSummary();
+
+        // Map-02 / Brg-29: disk fallback for pre-generated chunks that
+        // are NOT resident in the live world (e.g. a Chunky pre-gen of
+        // millions of chunks). Reading the .mca off the IPC thread costs
+        // the tick thread nothing. If disk has a usable tile, cache it
+        // (so subsequent requests are microsecond cache hits) and return
+        // it immediately instead of the "not yet" sentinel. A live render
+        // for the same chunk, if it ever loads, will overwrite the cache
+        // with fresher pixels via TickStateMirror.putVersioned.
+        if (server != null) {
+            try {
+                ChunkTile disk = DiskChunkRenderer.renderFromDisk(server, dim, cx, cz);
+                if (disk != null) {
+                    ChunkSurfaceCache.global().put(disk);
+                    return disk;
+                }
+            } catch (Throwable t) {
+                // Degrade gracefully: a mapping/IO failure just falls
+                // back to the sentinel + live-render path.
+            }
+        }
         return emptySentinel(dim, cx, cz);
     }
 

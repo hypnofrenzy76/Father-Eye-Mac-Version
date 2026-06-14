@@ -130,6 +130,54 @@ restore_saves() { [ "$SAVED_OFF" = 1 ] && rcon "save-on" > /dev/null 2>&1; SAVED
 # Ensure save-on always runs even on an interrupt.
 trap 'restore_saves' EXIT
 
+# ---- determinate progress -------------------------------------------------
+# The panel/web Backups tab shows a real percentage bar, so each archive
+# stage streams through a binary-safe Python passthrough counter that prints
+# FE_PROGRESS=<int 0-100> lines on stdout as bytes flow. Progress is scaled
+# into the [START,END] band assigned to the current stage so the bar moves
+# monotonically across world -> playerdata -> server.
+#
+#   bytes_in <total_bytes> <stage_start_pct> <stage_end_pct>
+# reads stdin, writes it unchanged to stdout, and emits progress to fd 3
+# (which the caller wires to real stdout). Falls back to no-op if python3 is
+# missing.
+PROG_FIFO=""
+bytes_in() {
+    local total="$1" start="$2" end="$3"
+    if ! command -v python3 >/dev/null 2>&1 || [ "${total:-0}" -le 0 ]; then
+        cat
+        return
+    fi
+    python3 - "$total" "$start" "$end" <<'PYEOF'
+import sys, os
+total = int(sys.argv[1]); start = int(sys.argv[2]); end = int(sys.argv[3])
+out = sys.stdout.buffer
+inp = sys.stdin.buffer
+seen = 0
+last = -1
+span = max(1, end - start)
+while True:
+    chunk = inp.read(1 << 16)
+    if not chunk:
+        break
+    out.write(chunk)
+    seen += len(chunk)
+    pct = start + int(span * min(seen, total) / total)
+    if pct != last:
+        last = pct
+        sys.stderr.write("FE_PROGRESS=%d\n" % pct)
+        sys.stderr.flush()
+out.flush()
+PYEOF
+}
+
+# Uncompressed size in bytes of a -C dir plus selected members/excludes.
+du_bytes() {
+    local dir="$1"; shift
+    du -sk "$dir" 2>/dev/null | awk '{print $1*1024}'
+}
+echo "FE_PROGRESS=0"
+
 # ---- player-owned subtrees (relative to world/) -----------------------
 PLAYER_PARTS=(playerdata playermap stats advancements deaths arcanum)
 
@@ -151,10 +199,16 @@ fail() {
 
 # ---- world.tar.gz (world minus player parts) --------------------------
 log "BACKUP start $BDIR label='${LABEL}'"
+# Pre-size the world (minus player parts) for the determinate bar. The
+# du is over the whole world; player parts are usually a small fraction
+# of the world dir, so this is a good-enough denominator for the bar.
+WORLD_BYTES=$(du_bytes "$SERVER/world")
 nice -n 19 tar -cf - -C "$SERVER/world" "${COMMON_EXCLUDES[@]}" "${WORLD_EXCLUDES[@]}" . 2>>"$LOG" \
+    | bytes_in "${WORLD_BYTES:-0}" 0 70 \
     | nice -n 19 gzip -1 > "$PARTIAL/world.tar.gz"
 WPS=("${PIPESTATUS[@]}")
-[ "${WPS[0]}" -eq 0 ] && [ "${WPS[1]}" -eq 0 ] && [ -s "$PARTIAL/world.tar.gz" ] || fail "world.tar.gz"
+[ "${WPS[0]}" -eq 0 ] && [ "${WPS[2]}" -eq 0 ] && [ -s "$PARTIAL/world.tar.gz" ] || fail "world.tar.gz"
+echo "FE_PROGRESS=70"
 
 # ---- playerdata.tar.gz (only the player parts that exist) -------------
 PRESENT_PARTS=()
@@ -162,13 +216,19 @@ for p in "${PLAYER_PARTS[@]}"; do
     [ -e "$SERVER/world/$p" ] && PRESENT_PARTS+=("$p")
 done
 if [ "${#PRESENT_PARTS[@]}" -gt 0 ]; then
+    PLAYER_BYTES=0
+    for p in "${PRESENT_PARTS[@]}"; do
+        PLAYER_BYTES=$(( PLAYER_BYTES + $(du_bytes "$SERVER/world/$p") ))
+    done
     nice -n 19 tar -cf - -C "$SERVER/world" "${COMMON_EXCLUDES[@]}" "${PRESENT_PARTS[@]}" 2>>"$LOG" \
+        | bytes_in "${PLAYER_BYTES:-0}" 70 90 \
         | nice -n 19 gzip -1 > "$PARTIAL/playerdata.tar.gz"
     PPS=("${PIPESTATUS[@]}")
-    [ "${PPS[0]}" -eq 0 ] && [ "${PPS[1]}" -eq 0 ] && [ -s "$PARTIAL/playerdata.tar.gz" ] || fail "playerdata.tar.gz"
+    [ "${PPS[0]}" -eq 0 ] && [ "${PPS[2]}" -eq 0 ] && [ -s "$PARTIAL/playerdata.tar.gz" ] || fail "playerdata.tar.gz"
 else
     log "WARN no player-owned subtrees present; playerdata.tar.gz skipped"
 fi
+echo "FE_PROGRESS=90"
 
 # ---- server.tar.gz (config + properties + scripts + lists) ------------
 SERVER_PARTS=()
@@ -176,11 +236,17 @@ for f in server.properties ops.json whitelist.json banned-players.json banned-ip
     [ -e "$SERVER/$f" ] && SERVER_PARTS+=("$f")
 done
 if [ "${#SERVER_PARTS[@]}" -gt 0 ]; then
+    SERVER_BYTES=0
+    for f in "${SERVER_PARTS[@]}"; do
+        SERVER_BYTES=$(( SERVER_BYTES + $(du_bytes "$SERVER/$f") ))
+    done
     nice -n 19 tar -cf - -C "$SERVER" "${COMMON_EXCLUDES[@]}" "${SERVER_PARTS[@]}" 2>>"$LOG" \
+        | bytes_in "${SERVER_BYTES:-0}" 90 99 \
         | nice -n 19 gzip -1 > "$PARTIAL/server.tar.gz"
     SPS=("${PIPESTATUS[@]}")
-    [ "${SPS[0]}" -eq 0 ] && [ "${SPS[1]}" -eq 0 ] && [ -s "$PARTIAL/server.tar.gz" ] || fail "server.tar.gz"
+    [ "${SPS[0]}" -eq 0 ] && [ "${SPS[2]}" -eq 0 ] && [ -s "$PARTIAL/server.tar.gz" ] || fail "server.tar.gz"
 fi
+echo "FE_PROGRESS=99"
 
 # restore saves now that all reads are done.
 restore_saves
@@ -260,6 +326,7 @@ done
 # stdout should grep for the FE_BACKUP_DIR= line rather than assume the
 # last line, since stderr/stdout interleave order is not guaranteed once a
 # parent merges the two streams.
+echo "FE_PROGRESS=100"
 echo "FE_BACKUP_DIR=$BDIR"
 echo "$BDIR"
 exit 0

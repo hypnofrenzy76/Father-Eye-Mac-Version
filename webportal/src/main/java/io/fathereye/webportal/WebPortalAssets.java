@@ -153,6 +153,8 @@ public final class WebPortalAssets {
                 <select id="mapDim"></select>
                 <button id="mapCenter">Center (0,0)</button>
                 <button id="mapFit">Fit All</button>
+                <select id="mapGoToPlayer"><option value="">Go to player\u2026</option></select>
+                <button id="mapRegionRollback">Region rollback</button>
                 <span id="mapCoords" class="meter">(--, --)</span>
                 <span id="mapLoading" class="meter"></span>
               </div>
@@ -359,6 +361,7 @@ public final class WebPortalAssets {
         .custom-row input{padding:6px;border-radius:5px;border:1px solid var(--line);background:#11131a;color:var(--fg)}
         select{padding:6px;border-radius:5px;border:1px solid var(--line);background:#11131a;color:var(--fg)}
         #mapCanvas{height:520px;cursor:grab}
+        #mapRegionRollback.active{background:var(--bad);color:#fff;border-color:var(--bad)}
         /* arcanum */
         #arcConfig{width:100%;height:40vh;background:#0e1014;color:var(--fg);border:1px solid var(--line);
           border-radius:8px;padding:10px;font-family:SFMono-Regular,Menlo,monospace;font-size:12px}
@@ -372,6 +375,8 @@ public final class WebPortalAssets {
         .bk-job.fail{border-color:#5a302c;background:#3d1816;color:#ffb4ae}
         .bk-job pre{margin:8px 0 0;max-height:160px;overflow:auto;font-family:SFMono-Regular,Menlo,monospace;
           font-size:11px;white-space:pre-wrap;color:var(--muted)}
+        .bk-bar{margin:8px 0 0;height:8px;border-radius:4px;background:#11131a;border:1px solid var(--line);overflow:hidden}
+        .bk-bar>span{display:block;height:100%;background:#c79a3a;transition:width .3s ease}
         #backupsTable td button{margin-right:4px}
         .bk-restore-world{background:#1f3d52;border-color:#2c5a78}
         .bk-restore-player{background:#3d2f12;border-color:#6a5420}
@@ -652,8 +657,71 @@ public final class WebPortalAssets {
             if(c && t && t.surfaceArgb){ c.tile=t.surfaceArgb; drawMap(); }
           }).catch(()=>{});
         }
+        // Map-02 (2026-06-14): ask the bridge which chunks exist ON DISK
+        // in the current viewport (Chunky pre-gen chunks the live world
+        // never loads, so chunks_topic never reports them) and queue a
+        // tile fetch for each new one. Mirrors the panel MapPane
+        // region_index wiring for 100% parity. Debounced + single-flight
+        // so a pan/zoom storm issues at most one disk enumeration at a
+        // time; an older bridge that lacks the op just rejects the rpc
+        // and the catch() no-ops.
+        let regionIndexInFlight=false, regionIndexTimer=null;
+        function visibleChunkBox(){
+          const c=mapCanvas; const s=mapView.scale;
+          const w=c.clientWidth||c.width, h=c.height;
+          const halfBlocksX=(w/2)/s, halfBlocksZ=(h/2)/s;
+          const minCx=Math.floor((mapView.ox-halfBlocksX)/16)-1;
+          const maxCx=Math.ceil((mapView.ox+halfBlocksX)/16)+1;
+          const minCz=Math.floor((mapView.oz-halfBlocksZ)/16)-1;
+          const maxCz=Math.ceil((mapView.oz+halfBlocksZ)/16)+1;
+          return {minCx,minCz,maxCx,maxCz};
+        }
+        function requestRegionIndex(){
+          if(regionIndexInFlight) return;
+          const dim=currentDim; const box=visibleChunkBox();
+          regionIndexInFlight=true;
+          rpc('region_index',{dim,minCx:box.minCx,minCz:box.minCz,maxCx:box.maxCx,maxCz:box.maxCz}).then(r=>{
+            regionIndexInFlight=false;
+            if(!r || dim!==currentDim) return;
+            const flat=r.chunks||[];
+            const dd=ensureDim(dim); let added=0;
+            for(let i=0;i+1<flat.length;i+=2){ const cx=flat[i],cz=flat[i+1]; const k=cx+','+cz;
+              if(!dd.chunks.has(k)){ dd.chunks.set(k,{cx,cz,tile:null}); fetchTile(dim,cx,cz); added++; } }
+            if(added>0){ updateMapLoading(); drawMap(); }
+          }).catch(()=>{ regionIndexInFlight=false; });
+        }
+        function scheduleRegionIndex(){
+          if(regionIndexTimer) clearTimeout(regionIndexTimer);
+          regionIndexTimer=setTimeout(requestRegionIndex,150);
+        }
         function updateMapPlayers(p){ ensureDim(currentDim); (p.players||[]).forEach(pl=>{
-          const dd=ensureDim(pl.dimensionId); dd.players=(dd.players||[]); }); ensureDim(currentDim).players=(p.players||[]).filter(x=>x.dimensionId===currentDim); drawMap(); }
+          const dd=ensureDim(pl.dimensionId); dd.players=(dd.players||[]); }); ensureDim(currentDim).players=(p.players||[]).filter(x=>x.dimensionId===currentDim); refreshGoToPlayer(p.players||[]); drawMap(); }
+        // Parity with panel Pnl-72: rebuild the "Go to player" selector
+        // from the full cross-dimension snapshot. Preserves the empty
+        // placeholder option as the always-selected default.
+        let goToPlayerList=[];
+        function refreshGoToPlayer(list){
+          goToPlayerList=list.slice();
+          const sel=document.getElementById('mapGoToPlayer'); if(!sel) return;
+          const names=list.map(pl=>pl.name).sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+          let html='<option value="">Go to player\u2026</option>';
+          names.forEach(n=>{ html+='<option value="'+n.replace(/"/g,'&quot;')+'">'+n+'</option>'; });
+          if(sel.innerHTML!==html){ sel.innerHTML=html; sel.value=''; }
+        }
+        // Centre the viewport on the chosen player, switching dimension
+        // first if they're in another one (mirrors panel goToPlayer).
+        function goToPlayer(name){
+          if(!name) return;
+          const pl=goToPlayerList.find(x=>x.name===name); if(!pl) return;
+          if(pl.dimensionId && pl.dimensionId!==currentDim){
+            currentDim=pl.dimensionId;
+            const dimSel=document.getElementById('mapDim'); if(dimSel) dimSel.value=currentDim;
+            ensureDim(currentDim).chunks.forEach(ch=>{ if(!ch.tile) fetchTile(currentDim,ch.cx,ch.cz); });
+            updateMapLoading();
+          }
+          mapView.ox=pl.x; mapView.oz=pl.z;
+          drawMap(); scheduleRegionIndex();
+        }
         function updateMapLoading(){
           const dd=ensureDim(currentDim); let loaded=0; dd.chunks.forEach(c=>{ if(c.tile)loaded++; });
           document.getElementById('mapLoading').textContent='Chunks '+loaded+' / '+dd.chunks.size;
@@ -674,20 +742,99 @@ public final class WebPortalAssets {
             g.fillStyle='#c8a02a'; g.beginPath(); g.arc(px,py,4,0,7); g.fill();
             g.fillStyle='#fff'; g.font='11px sans-serif'; g.fillText(pl.name,px+6,py+3);
           });
+          // Region-rollback rubber-band overlay (parity with panel Pnl-73).
+          // Highlights the snapped 512-block region tiles the drag covers
+          // plus the raw drag rectangle, so the operator sees exactly which
+          // .mca files will be rolled back.
+          if(regionSel.active){
+            const box=selectionToRegionBox();
+            if(box){
+              const cell=512*s;
+              g.fillStyle='rgba(220,80,80,0.18)'; g.strokeStyle='rgba(255,120,120,0.7)'; g.lineWidth=1;
+              for(let rz=box[1];rz<=box[3];rz++){ for(let rx=box[0];rx<=box[2];rx++){
+                const px=w/2+(rx*512-mapView.ox)*s, py=h/2+(rz*512-mapView.oz)*s;
+                g.fillRect(px,py,cell,cell); g.strokeRect(px+0.5,py+0.5,cell,cell);
+              } }
+            }
+            const x0=Math.min(regionSel.sx,regionSel.cx), y0=Math.min(regionSel.sy,regionSel.cy);
+            const x1=Math.max(regionSel.sx,regionSel.cx), y1=Math.max(regionSel.sy,regionSel.cy);
+            g.strokeStyle='rgba(255,220,120,0.95)'; g.lineWidth=1.5;
+            g.strokeRect(x0+0.5,y0+0.5,x1-x0,y1-y0);
+          }
+        }
+        // Region-rollback rubber-band state + helpers (parity with panel).
+        let regionSel={mode:false,active:false,sx:0,sy:0,cx:0,cy:0};
+        function selectionToRegionBox(){
+          const x0=Math.min(regionSel.sx,regionSel.cx), y0=Math.min(regionSel.sy,regionSel.cy);
+          const x1=Math.max(regionSel.sx,regionSel.cx), y1=Math.max(regionSel.sy,regionSel.cy);
+          if(x1-x0<2 && y1-y0<2) return null;
+          const w=mapCanvas.width, h=mapCanvas.height, s=mapView.scale;
+          const wx0=mapView.ox+(x0-w/2)/s, wz0=mapView.oz+(y0-h/2)/s;
+          const wx1=mapView.ox+(x1-w/2)/s, wz1=mapView.oz+(y1-h/2)/s;
+          return [Math.floor(wx0/512),Math.floor(wz0/512),Math.floor(wx1/512),Math.floor(wz1/512)];
+        }
+        function setRegionMode(on){
+          regionSel.mode=on; regionSel.active=false;
+          const b=document.getElementById('mapRegionRollback');
+          b.classList.toggle('active',on);
+          mapCanvas.style.cursor=on?'crosshair':'grab';
+          drawMap();
+        }
+        // On rubber-band release, resolve the covered regions and offer a
+        // confirmed region rollback against a chosen backup.
+        async function finishRegionSelection(){
+          const box=selectionToRegionBox();
+          regionSel.active=false; drawMap();
+          if(!box) return;
+          const regions=[];
+          for(let rz=box[1];rz<=box[3];rz++){ for(let rx=box[0];rx<=box[2];rx++){ regions.push(rx+','+rz); } }
+          if(!regions.length) return;
+          const running=document.getElementById('stateBadge').classList.contains('state-running');
+          if(running){ toast('Stop the server before a region rollback.'); return; }
+          // Fetch structured world-bearing backups to choose from.
+          let ids=[];
+          try{
+            const r=await fetch('/api/backups'); const data=await r.json();
+            (data.backups||[]).forEach(bk=>{ if(bk.kind==='structured'&&bk.hasWorld) ids.push(bk.id); });
+          }catch(e){ toast('Backup list error: '+e.message); return; }
+          if(!ids.length){ toast('No structured backups available to roll back to.'); return; }
+          const id=prompt('Region rollback: restore '+regions.length+' region file'+(regions.length===1?'':'s')+
+            ' in '+currentDim+' (x['+box[0]+'..'+box[2]+'] z['+box[1]+'..'+box[3]+']).\\n\\n'+
+            'Only the selected .mca files are overwritten; the rest of the world is untouched. '+
+            'A pre-rollback safety snapshot is taken automatically.\\n\\nBackup id to restore from:',ids[0]);
+          if(id===null) return;
+          if(!ids.includes(id)){ toast('Unknown backup id: '+id); return; }
+          try{
+            const r=await fetch('/api/region-rollback',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id,dim:currentDim,regions})});
+            const j=await r.json().catch(()=>({}));
+            if(!r.ok||!j.started){ toast('Region rollback rejected: '+(j.error||r.status)); }
+            else { toast('Region rollback started ('+regions.length+' region'+(regions.length===1?'':'s')+')'); bkStartPolling(); }
+          }catch(e){ toast('Region rollback error: '+e.message); }
         }
         function avgColor(arr){ let r=0,gg=0,b=0,n=arr.length; for(let i=0;i<n;i++){ const v=arr[i]; r+=(v>>16)&255; gg+=(v>>8)&255; b+=v&255; } return 'rgb('+((r/n)|0)+','+((gg/n)|0)+','+((b/n)|0)+')'; }
-        document.getElementById('mapDim').onchange=e=>{ currentDim=e.target.value; ensureDim(currentDim).chunks.forEach(ch=>{ if(!ch.tile) fetchTile(currentDim,ch.cx,ch.cz); }); drawMap(); updateMapLoading(); };
-        document.getElementById('mapCenter').onclick=()=>{ mapView.ox=0; mapView.oz=0; drawMap(); };
-        document.getElementById('mapFit').onclick=()=>{ const dd=ensureDim(currentDim); let minx=1e9,minz=1e9,maxx=-1e9,maxz=-1e9; dd.chunks.forEach(ch=>{ minx=Math.min(minx,ch.cx*16);minz=Math.min(minz,ch.cz*16);maxx=Math.max(maxx,ch.cx*16);maxz=Math.max(maxz,ch.cz*16); }); if(minx>maxx)return; mapView.ox=(minx+maxx)/2; mapView.oz=(minz+maxz)/2; mapView.scale=Math.min(mapCanvas.clientWidth/(maxx-minx+32),mapCanvas.height/(maxz-minz+32)); drawMap(); };
+        document.getElementById('mapDim').onchange=e=>{ currentDim=e.target.value; ensureDim(currentDim).chunks.forEach(ch=>{ if(!ch.tile) fetchTile(currentDim,ch.cx,ch.cz); }); drawMap(); updateMapLoading(); scheduleRegionIndex(); };
+        document.getElementById('mapCenter').onclick=()=>{ mapView.ox=0; mapView.oz=0; drawMap(); scheduleRegionIndex(); };
+        document.getElementById('mapGoToPlayer').onchange=e=>{ const n=e.target.value; e.target.value=''; goToPlayer(n); };
+        document.getElementById('mapFit').onclick=()=>{ const dd=ensureDim(currentDim); let minx=1e9,minz=1e9,maxx=-1e9,maxz=-1e9; dd.chunks.forEach(ch=>{ minx=Math.min(minx,ch.cx*16);minz=Math.min(minz,ch.cz*16);maxx=Math.max(maxx,ch.cx*16);maxz=Math.max(maxz,ch.cz*16); }); if(minx>maxx)return; mapView.ox=(minx+maxx)/2; mapView.oz=(minz+maxz)/2; mapView.scale=Math.min(mapCanvas.clientWidth/(maxx-minx+32),mapCanvas.height/(maxz-minz+32)); drawMap(); scheduleRegionIndex(); };
+        document.getElementById('mapRegionRollback').onclick=()=>setRegionMode(!regionSel.mode);
         (function(){ let drag=false,lx,ly;
-          mapCanvas.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
-          window.addEventListener('mouseup',()=>drag=false);
+          mapCanvas.addEventListener('mousedown',e=>{
+            // In region-rollback mode a primary-button press begins a
+            // rubber-band rectangle rather than a pan (parity with panel).
+            if(regionSel.mode && e.button===0){ const r=mapCanvas.getBoundingClientRect();
+              regionSel.active=true; regionSel.sx=regionSel.cx=e.clientX-r.left; regionSel.sy=regionSel.cy=e.clientY-r.top; drawMap(); return; }
+            drag=true;lx=e.clientX;ly=e.clientY;});
+          window.addEventListener('mouseup',()=>{
+            if(regionSel.active){ finishRegionSelection(); drag=false; return; }
+            if(drag){drag=false; scheduleRegionIndex();} else drag=false; });
           mapCanvas.addEventListener('mousemove',e=>{ const r=mapCanvas.getBoundingClientRect();
             const wx=mapView.ox+(e.clientX-r.left-mapCanvas.width/2)/mapView.scale;
             const wz=mapView.oz+(e.clientY-r.top-mapCanvas.height/2)/mapView.scale;
             document.getElementById('mapCoords').textContent='('+Math.round(wx)+', '+Math.round(wz)+')';
+            if(regionSel.active){ regionSel.cx=e.clientX-r.left; regionSel.cy=e.clientY-r.top; drawMap(); return; }
             if(drag){ mapView.ox-=(e.clientX-lx)/mapView.scale; mapView.oz-=(e.clientY-ly)/mapView.scale; lx=e.clientX;ly=e.clientY; drawMap(); } });
-          mapCanvas.addEventListener('wheel',e=>{ e.preventDefault(); mapView.scale*=e.deltaY<0?1.1:0.9; mapView.scale=Math.max(0.02,Math.min(8,mapView.scale)); drawMap(); },{passive:false});
+          mapCanvas.addEventListener('wheel',e=>{ e.preventDefault(); mapView.scale*=e.deltaY<0?1.1:0.9; mapView.scale=Math.max(0.02,Math.min(8,mapView.scale)); drawMap(); scheduleRegionIndex(); },{passive:false});
         })();
 
         // ---- WORLD ----
@@ -855,7 +1002,12 @@ public final class WebPortalAssets {
             else if(j.ok===true) el.classList.add('ok');
             else if(j.ok===false) el.classList.add('fail');
             const logHtml = j.log ? '<pre>'+j.log.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre>' : '';
-            el.innerHTML='<strong>'+(j.message||'')+'</strong>'+logHtml;
+            // Determinate bar from the script's FE_PROGRESS markers; shown while
+            // running and on a successful finish, hidden for plain idle/fail.
+            const pct = (typeof j.percent==='number') ? Math.max(0,Math.min(100,j.percent)) : 0;
+            const barHtml = (j.running || j.ok===true)
+              ? '<div class="bk-bar"><span style="width:'+pct+'%"></span></div>' : '';
+            el.innerHTML='<strong>'+(j.message||'')+(j.running?' ('+pct+'%)':'')+'</strong>'+barHtml+logHtml;
           });
         }
         async function bkPollJob(){
@@ -889,7 +1041,7 @@ public final class WebPortalAssets {
           document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
           b.classList.add('active');
           document.getElementById('tab-'+b.dataset.tab).classList.add('active');
-          if(b.dataset.tab==='map') drawMap();
+          if(b.dataset.tab==='map'){ drawMap(); scheduleRegionIndex(); }
           if(b.dataset.tab==='stats') drawTps();
           if(b.dataset.tab==='arcanum') loadArcanum();
           if(b.dataset.tab==='backups'){ bkLoad(); bkPollJob(); }

@@ -39,6 +39,11 @@ public final class RpcHandlers {
         // TickStateMirror renders on the tick thread); serve it inline
         // on the IPC thread so tile bursts never queue tick-thread work.
         d.registerDirect("chunk_tile", io.fathereye.bridge.rpc.ChunkTileHandler::handle);
+        // Map-02/Brg-29: region_index enumerates chunks present on disk
+        // (incl. Chunky pre-gen chunks not resident in the live world)
+        // within a viewport box. Pure disk read, no world access, so it
+        // is served inline on the IPC thread like chunk_tile.
+        d.registerDirect("region_index", io.fathereye.bridge.rpc.RegionIndexHandler::handle);
         // Live player-state restore (inject backup <uuid>.dat NBT into an
         // online player without a disconnect, or write it for an offline
         // one). Runs on the tick thread so it may touch live entities.

@@ -176,6 +176,55 @@ public final class App extends Application {
 
         appConfig = io.fathereye.panel.config.AppConfig.load(io.fathereye.panel.config.AppConfig.defaultPath());
         mainWindow.configPane().bindConfig(appConfig);
+
+        // Backups + Rollback tabs (100% surface parity with the WebPortal).
+        // Both share a single BackupOps job slot so only one backup/rollback
+        // runs at a time across the two tabs; the determinate progress bar in
+        // each reflects the same FE_PROGRESS stream the scripts emit.
+        mainWindow.backupsPane().bind(appConfig);
+        mainWindow.backupsPane().setPipeSupplier(() -> pipeClient);
+        mainWindow.rollbackPane().bind(appConfig, mainWindow.backupsPane().ops());
+        java.util.function.BooleanSupplier serverStoppedGate = () -> {
+            ServerLauncher.State s = launcher == null ? null : launcher.state();
+            // Rollback is only safe with no live world: launcher stopped/
+            // crashed AND no external bridge currently connected.
+            boolean launcherIdle = s == null
+                    || s == ServerLauncher.State.STOPPED
+                    || s == ServerLauncher.State.CRASHED;
+            boolean bridgeLive = pipeClient != null && !pipeClient.isClosed();
+            return launcherIdle && !bridgeLive;
+        };
+        mainWindow.rollbackPane().setServerStoppedSupplier(serverStoppedGate);
+
+        // Pnl-73: region-selective rollback driven from the Map tab's
+        // rubber-band selection. Shares the same single BackupOps job slot
+        // and the same stopped-server gate as the whole-world Rollback tab,
+        // so only one backup/rollback runs at a time and a region rollback
+        // is refused while the server is up. 100% parity with the WebPortal
+        // map rubber-band.
+        final io.fathereye.panel.launcher.BackupOps regionOps = mainWindow.backupsPane().ops();
+        mainWindow.mapPane().setRegionRollbackHooks(new io.fathereye.panel.view.MapPane.RegionRollbackHooks() {
+            @Override public boolean serverStopped() { return serverStoppedGate.getAsBoolean(); }
+            @Override public boolean jobRunning() { return regionOps.isJobRunning(); }
+            @Override public java.util.List<String> backupIds() {
+                java.util.List<String> ids = new java.util.ArrayList<>();
+                com.fasterxml.jackson.databind.JsonNode res = regionOps.list();
+                com.fasterxml.jackson.databind.JsonNode arr = res.path("backups");
+                if (arr.isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode b : arr) {
+                        if ("structured".equals(b.path("kind").asText(""))
+                                && b.path("hasWorld").asBoolean(false)) {
+                            ids.add(b.path("id").asText(""));
+                        }
+                    }
+                }
+                return ids;
+            }
+            @Override public boolean startRegionRollback(String backupId, String dim, java.util.List<String> regions) {
+                return regionOps.startRegionRollback(backupId, dim, regions);
+            }
+        });
+
         alertEngine = new io.fathereye.panel.alerts.AlertEngine(appConfig);
         // Pnl-41: route alerts through the in-window banner instead
         // of a modal Alert dialog. The dialog interrupted gameplay on

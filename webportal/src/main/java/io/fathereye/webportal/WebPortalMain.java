@@ -130,6 +130,9 @@ public final class WebPortalMain {
             case "/api/rollback":
                 handleApiRollback(req, resp);
                 return false;
+            case "/api/region-rollback":
+                handleApiRegionRollback(req, resp);
+                return false;
             case "/api/job":
                 handleApiJob(req, resp);
                 return false;
@@ -189,6 +192,40 @@ public final class WebPortalMain {
             return;
         }
         boolean started = backups.startRollback(id, scope);
+        String body = started
+                ? "{\"started\":true}"
+                : "{\"started\":false,\"error\":\"rejected (job running or invalid input)\"}";
+        resp.json(started ? 200 : 409, body);
+    }
+
+    /**
+     * Region-selective rollback: restore only the operator-selected Anvil
+     * region files of one dimension from a backup. Same stopped-only gate
+     * as the whole-world rollback. Body: {@code {id, dim, regions:["rx,rz",...]}}.
+     */
+    private void handleApiRegionRollback(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        if (!"POST".equalsIgnoreCase(req.method)) { resp.text(400, "POST only"); return; }
+        if (bridge.isConnected()) {
+            resp.json(409, "{\"started\":false,\"error\":\"server is running; stop it before rolling back\"}");
+            return;
+        }
+        String id, dim;
+        java.util.List<String> regions = new java.util.ArrayList<>();
+        try {
+            JsonNode b = PipeCodecs.JSON.readTree(req.body == null || req.body.length == 0 ? "{}"
+                    : new String(req.body, StandardCharsets.UTF_8));
+            id = text(b, "id");
+            dim = text(b, "dim");
+            JsonNode arr = b.path("regions");
+            if (arr.isArray()) {
+                for (JsonNode r : arr) regions.add(r.asText(""));
+            }
+        } catch (Exception e) {
+            resp.json(400, "{\"started\":false,\"error\":\"bad request body\"}");
+            return;
+        }
+        boolean started = backups.startRegionRollback(id, dim, regions);
         String body = started
                 ? "{\"started\":true}"
                 : "{\"started\":false,\"error\":\"rejected (job running or invalid input)\"}";

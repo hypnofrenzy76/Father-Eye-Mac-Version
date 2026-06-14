@@ -1,10 +1,11 @@
-package io.fathereye.webportal;
+package io.fathereye.panel.launcher;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.fathereye.webportal.ipc.PipeCodecs;
-import io.fathereye.webportal.ipc.PlatformPaths;
+import io.fathereye.panel.config.AppConfig;
+import io.fathereye.panel.util.PlatformPaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
@@ -27,33 +29,34 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Backup and rollback engine for the web portal. Runs entirely on this Mac
- * where both the server folder and the external backup volume are directly
- * reachable; the bridge (inside the Minecraft JVM) is never asked to extract
- * a multi-GB tarball over a live world.
+ * Panel-side backup/rollback engine. This is the desktop-app twin of the web
+ * portal's {@code BackupManager}: same external-only backup format, same
+ * {@code fe-backup.sh} / {@code fe-rollback.sh} scripts, same single-slot job
+ * model, so the Backups/Rollback tabs in the JavaFX panel and the browser
+ * portal drive an identical, interchangeable backup store. Keeping the two in
+ * lockstep is the 100% surface-parity standing rule.
  *
- * <p>Backup creation and rollback are shelled out to the bundled
- * {@code fe-backup.sh} / {@code fe-rollback.sh} scripts (extracted to the
- * AppData {@code scripts/} dir on first use). The scripts do the RCON
- * save-bracket, the streaming tar+gzip to the external drive, the
- * pre-rollback safety snapshot, and the extract-to-temp-then-swap. This
- * class owns listing, a single-slot job model, and the auth-gated surface
- * the HTTP layer calls.
+ * <p>All work happens on this Mac where both the server folder and the
+ * external "Server Backups" volume are reachable; the bridge is never asked
+ * to extract a multi-GB tarball over a live world. Only one long-running job
+ * (backup or rollback) runs at a time; a second request while a job is active
+ * is refused. Job state is an immutable {@link Job} snapshot the UI polls.
  *
- * <p>Only one long-running job (backup or rollback) may run at a time; a
- * second request while a job is active is rejected. Job state is published
- * through an immutable {@link Job} snapshot the UI polls.
+ * <p>The existing {@link BackupService} (pre-stop + hourly scheduler) is left
+ * intact and unchanged; this class is the interactive, listing-aware surface
+ * the Backups/Rollback tabs call.
  */
-public final class BackupManager {
+public final class BackupOps {
 
-    private static final Logger LOG = LoggerFactory.getLogger("FatherEye-WebPortal-Backup");
+    private static final Logger LOG = LoggerFactory.getLogger("FatherEye-BackupOps");
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private static final Pattern FE_ID = Pattern.compile("^fe-(\\d{8})-(\\d{6})$");
     private static final Pattern LEGACY = Pattern.compile("^(.+?)-(\\d{8}-\\d{6})\\.tar\\.gz$");
     /** Determinate-progress marker emitted by fe-backup.sh / fe-rollback.sh. */
     private static final Pattern PROGRESS = Pattern.compile("FE_PROGRESS=(\\d{1,3})");
 
-    /** Single-slot current/last job. Replaced atomically on each transition. */
+    private final AppConfig config;
     private final AtomicReference<Job> job = new AtomicReference<>(Job.idle());
 
     private volatile Path backupScript;
@@ -65,13 +68,35 @@ public final class BackupManager {
      *  script's tar member-selection glob. */
     private static final Pattern REGION_TOKEN = Pattern.compile("^-?\\d+,-?\\d+$");
 
-    public BackupManager() {
+    public BackupOps(AppConfig config) {
+        this.config = config;
         try {
             ensureScripts();
         } catch (IOException e) {
             LOG.error("Could not extract backup scripts: {}", e.getMessage());
         }
     }
+
+    // ---- config views (mirror PortalConfig) ----------------------------
+
+    private Path serverDir() {
+        String w = config.serverRuntime != null ? config.serverRuntime.workingDir : null;
+        if (w == null || w.isBlank()) {
+            return Paths.get(System.getProperty("user.home", "."), "Desktop", "Server");
+        }
+        return Paths.get(w);
+    }
+
+    private Path externalBackupDir() {
+        String e = config.backup != null ? config.backup.externalBackupDir : null;
+        if (e == null || e.isBlank()) {
+            return Paths.get(BackupService.DEFAULT_EXTERNAL_DIR);
+        }
+        return Paths.get(e);
+    }
+
+    private int retainDays() { return config.backup != null ? config.backup.retainDays : 14; }
+    private int minFreeGb()  { return config.backup != null ? config.backup.minFreeGb : 60; }
 
     // ---- scripts -------------------------------------------------------
 
@@ -105,15 +130,15 @@ public final class BackupManager {
 
     /**
      * Enumerate backups on the external drive: structured {@code fe-*}
-     * directories (rich, with per-component sizes) first, then legacy
-     * whole-bundle {@code *-<ts>.tar.gz} tarballs. Newest first.
+     * directories first, then legacy whole-bundle tarballs. Newest first.
+     * Identical JSON shape to the web portal's {@code /api/backups}.
      */
     public JsonNode list() {
-        ArrayNode out = PipeCodecs.JSON.createArrayNode();
-        Path dest = PortalConfig.externalBackupDir();
+        ArrayNode out = JSON.createArrayNode();
+        Path dest = externalBackupDir();
         boolean mounted = Files.isDirectory(dest.getParent() == null ? dest : dest.getParent());
 
-        ObjectNode meta = PipeCodecs.JSON.createObjectNode();
+        ObjectNode meta = JSON.createObjectNode();
         meta.put("externalDir", dest.toString());
         meta.put("mounted", mounted);
         meta.put("freeBytes", freeBytes(dest));
@@ -137,14 +162,14 @@ public final class BackupManager {
             }
         }
 
-        ObjectNode root = PipeCodecs.JSON.createObjectNode();
+        ObjectNode root = JSON.createObjectNode();
         root.set("meta", meta);
         root.set("backups", out);
         return root;
     }
 
     private ObjectNode describeStructured(Path dir, String id) {
-        ObjectNode n = PipeCodecs.JSON.createObjectNode();
+        ObjectNode n = JSON.createObjectNode();
         Path manifest = dir.resolve("manifest.json");
         n.put("id", id);
         n.put("kind", "structured");
@@ -157,7 +182,7 @@ public final class BackupManager {
         long total = 0;
         if (Files.isRegularFile(manifest)) {
             try {
-                JsonNode m = PipeCodecs.JSON.readTree(Files.readAllBytes(manifest));
+                JsonNode m = JSON.readTree(Files.readAllBytes(manifest));
                 n.put("createdIso", m.path("createdIso").asText(""));
                 n.put("createdEpoch", m.path("createdEpoch").asLong(0));
                 n.put("label", m.path("label").asText(""));
@@ -169,7 +194,6 @@ public final class BackupManager {
         }
         if (total <= 0) total = dirSize(dir);
         n.put("totalBytes", total);
-        // Fallback timestamp from the id if manifest missing.
         if (!n.has("createdEpoch") || n.path("createdEpoch").asLong(0) == 0) {
             n.put("createdEpoch", epochFromFeId(id));
         }
@@ -177,7 +201,7 @@ public final class BackupManager {
     }
 
     private ObjectNode describeLegacy(Path file, String name) {
-        ObjectNode n = PipeCodecs.JSON.createObjectNode();
+        ObjectNode n = JSON.createObjectNode();
         n.put("id", name);
         n.put("kind", "legacy");
         n.put("hasWorld", true);
@@ -200,18 +224,15 @@ public final class BackupManager {
     public boolean startBackup(String label) {
         if (backupScript == null) { failNow("backup script unavailable"); return false; }
         if (!claim("backup", "Starting backup...")) return false;
-        // Once the slot is claimed, ANY failure before the worker thread
-        // takes over must release it, or the single slot is wedged
-        // "running" forever and all future backups/rollbacks are refused.
         try {
-            Path server = PortalConfig.serverDir();
-            Path dest = PortalConfig.externalBackupDir();
+            Path server = serverDir();
+            Path dest = externalBackupDir();
             List<String> cmd = new ArrayList<>(List.of(
                     "/bin/bash", backupScript.toString(),
                     "--server", server.toString(),
                     "--dest", dest.toString(),
-                    "--retain-days", String.valueOf(PortalConfig.retainDays()),
-                    "--min-free-gb", String.valueOf(PortalConfig.minFreeGb())));
+                    "--retain-days", String.valueOf(retainDays()),
+                    "--min-free-gb", String.valueOf(minFreeGb())));
             if (label != null && !label.isBlank()) { cmd.add("--label"); cmd.add(label); }
             runAsync("backup", cmd, "Backup");
             return true;
@@ -225,9 +246,9 @@ public final class BackupManager {
     // ---- rollback ------------------------------------------------------
 
     /**
-     * Start a rollback of {@code id} with the given scope. The caller must
-     * have already verified the server is stopped; the script re-checks.
-     * Returns false if a job is already running or inputs are invalid.
+     * Start a whole-component rollback of {@code id} with the given scope.
+     * The caller must have already verified the server is stopped; the script
+     * re-checks via RCON. Returns false if a job is running or inputs invalid.
      */
     public boolean startRollback(String id, String scope) {
         if (rollbackScript == null) { failNow("rollback script unavailable"); return false; }
@@ -237,8 +258,8 @@ public final class BackupManager {
         }
         if (!claim("rollback", "Starting rollback (" + scope + ")...")) return false;
         try {
-            Path server = PortalConfig.serverDir();
-            Path dest = PortalConfig.externalBackupDir();
+            Path server = serverDir();
+            Path dest = externalBackupDir();
             List<String> cmd = List.of(
                     "/bin/bash", rollbackScript.toString(),
                     "--id", id, "--scope", scope,
@@ -280,8 +301,8 @@ public final class BackupManager {
         if (!claim("rollback", "Starting region rollback (" + count + " region"
                 + (count == 1 ? "" : "s") + ")...")) return false;
         try {
-            Path server = PortalConfig.serverDir();
-            Path dest = PortalConfig.externalBackupDir();
+            Path server = serverDir();
+            Path dest = externalBackupDir();
             List<String> cmd = List.of(
                     "/bin/bash", regionRollbackScript.toString(),
                     "--id", id, "--dim", dim, "--regions", regionArg,
@@ -301,6 +322,10 @@ public final class BackupManager {
 
     public JsonNode jobStatus() {
         return job.get().toJson();
+    }
+
+    public boolean isJobRunning() {
+        return job.get().running;
     }
 
     private boolean claim(String type, String message) {
@@ -337,9 +362,6 @@ public final class BackupManager {
                         job.set(Job.running(type, human + " in progress...", pct, tail.toString()));
                     }
                 }
-                // waitFor is outside the try-with-resources but reached on the
-                // normal path; the catch below still reaps via destroyForcibly
-                // if reading threw, so we never leak the child process.
                 rc = p.waitFor();
             } catch (IOException | InterruptedException e) {
                 if (e instanceof InterruptedException) Thread.currentThread().interrupt();
@@ -352,7 +374,7 @@ public final class BackupManager {
             String msg = ok ? human + " completed." : human + " failed (exit " + rc + ").";
             job.set(Job.done(type, ok, msg, ok ? 100 : pct, tail.toString()));
             LOG.info("{} finished rc={}", human, rc);
-        }, "FatherEye-WebPortal-" + type);
+        }, "FatherEye-Panel-" + type);
         t.setDaemon(true);
         t.start();
     }
@@ -363,7 +385,6 @@ public final class BackupManager {
 
     private static void appendTail(StringBuilder tail, String line) {
         tail.append(line).append('\n');
-        // keep the last ~4000 chars only
         if (tail.length() > 4000) tail.delete(0, tail.length() - 4000);
     }
 
@@ -433,7 +454,7 @@ public final class BackupManager {
         }
 
         JsonNode toJson() {
-            ObjectNode n = PipeCodecs.JSON.createObjectNode();
+            ObjectNode n = JSON.createObjectNode();
             n.put("type", type);
             n.put("running", running);
             if (ok == null) n.putNull("ok"); else n.put("ok", ok);

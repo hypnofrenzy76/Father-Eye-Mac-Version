@@ -43,6 +43,8 @@ public final class MainWindow {
     private final MapPane mapPane = new MapPane();
     private final ConfigPane configPane = new ConfigPane();
     private final ArcanumPane arcanumPane = new ArcanumPane();
+    private final BackupsPane backupsPane = new BackupsPane();
+    private final RollbackPane rollbackPane = new RollbackPane();
     private final Button startBtn = new Button("Start");
     private final Button stopBtn = new Button("Stop");
     private final Button restartBtn = new Button("Restart");
@@ -95,6 +97,8 @@ public final class MainWindow {
                 tab("Mobs", mobsPane.root()),
                 tab("Mods", modsPane.root()),
                 tab("Stats", statsPane.root()),
+                tab("Backups", backupsPane.root()),
+                tab("Rollback", rollbackPane.root()),
                 tab("Console", consolePane.root()),
                 tab("Config", configPane.root()),
                 stubTab("Alerts (M15)")
@@ -110,6 +114,8 @@ public final class MainWindow {
     public MapPane mapPane() { return mapPane; }
     public ConfigPane configPane() { return configPane; }
     public ArcanumPane arcanumPane() { return arcanumPane; }
+    public BackupsPane backupsPane() { return backupsPane; }
+    public RollbackPane rollbackPane() { return rollbackPane; }
     public Button startBtn() { return startBtn; }
     public Button stopBtn() { return stopBtn; }
     public Button restartBtn() { return restartBtn; }
