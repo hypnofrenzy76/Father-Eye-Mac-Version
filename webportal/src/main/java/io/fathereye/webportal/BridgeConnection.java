@@ -54,6 +54,24 @@ public final class BridgeConnection {
         void onDisconnected();
     }
 
+    /**
+     * Pnl-78/Web-08: RPC sink for the FED mode. When the portal runs in-process
+     * inside the panel JVM, the bridge accepts only ONE IPC client and the panel
+     * already holds it (PipeAcceptLoop is single-client by design). The portal
+     * must therefore route every browser RPC through the panel's live
+     * {@code PipeClient} instead of opening a second socket that the bridge would
+     * never service. The panel supplies an implementation that delegates to its
+     * own client.
+     */
+    public interface RpcDelegate {
+        CompletableFuture<JsonNode> sendRequest(String op, Map<String, Object> args);
+    }
+
+    /** Non-null only in FED mode; routes {@link #sendRequest} to the panel. */
+    private volatile RpcDelegate rpcDelegate;
+    /** True once {@link #startFed} has run; disables the self-owned socket path. */
+    private volatile boolean fedMode = false;
+
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, JsonNode> latestSnapshots = new ConcurrentHashMap<>();
 
@@ -84,10 +102,74 @@ public final class BridgeConnection {
         reconnect.scheduleWithFixedDelay(this::ensureConnected, 0, 5, TimeUnit.SECONDS);
     }
 
+    /**
+     * Pnl-78/Web-08: start in FED mode. The portal does NOT open its own socket
+     * or run a reconnect loop; instead the panel drives connection state and data
+     * through {@link #feedConnected}, {@link #feedTopic} and {@link #feedDisconnected},
+     * and browser RPCs are routed through {@code delegate}. Idempotent: a second
+     * call (or a call after {@link #start()}) is a no-op so the self-owned-socket
+     * path can never be armed alongside the fed path.
+     */
+    public void startFed(RpcDelegate delegate) {
+        if (delegate == null) throw new IllegalArgumentException("rpc delegate required in fed mode");
+        if (!started.compareAndSet(false, true)) return;
+        this.rpcDelegate = delegate;
+        this.fedMode = true;
+        // No reconnect executor and no socket: the panel feeds us. We never call
+        // ensureConnected()/tryMarker() so no second IPC client is created.
+    }
+
     public void stop() {
+        // In fed mode there is no reconnect task scheduled and no self-owned
+        // PipeClient; shutting the (idle) executor down is harmless. We never
+        // touch the panel's client (we do not own it).
+        if (fedMode) {
+            connected = false;
+            latestSnapshots.clear();
+            welcomeJson = null;
+            return;
+        }
         reconnect.shutdownNow();
         PipeClient pc = pipeClient;
         if (pc != null) pc.close();
+    }
+
+    // ---- Pnl-78/Web-08: FED-mode inputs driven by the panel ----
+
+    /**
+     * Publish the bridge handshake to the portal. Mirrors the self-owned path:
+     * sets connected=true, stores the welcome JSON, and fans onConnected out to
+     * every listener (the WebSocket sessions). Safe to call repeatedly; the last
+     * welcome wins. No-op outside fed mode.
+     */
+    public void feedConnected(JsonNode welcome) {
+        if (!fedMode) return;
+        this.welcomeJson = welcome;
+        this.connected = true;
+        for (Listener l : listeners) {
+            try { l.onConnected(welcome); } catch (Throwable t) { LOG.warn("listener onConnected failed", t); }
+        }
+    }
+
+    /**
+     * Feed one topic frame from the panel. The {@code payload} is the SAME value
+     * the panel's TopicDispatcher delivered, i.e. the raw bridge payload (Snapshot
+     * /Delta arrive wrapped as {@code { seq, data }}); {@link #handleTopic} performs
+     * the single {@code data} unwrap the browser expects, exactly as the self-owned
+     * reader path does. No-op outside fed mode.
+     */
+    public void feedTopic(String kind, String topic, JsonNode payload) {
+        if (!fedMode) return;
+        handleTopic(kind, topic, payload);
+    }
+
+    /**
+     * Publish a bridge disconnect to the portal (server stopped/crashed). Clears
+     * cached state and fans onDisconnected out to listeners. No-op outside fed mode.
+     */
+    public void feedDisconnected() {
+        if (!fedMode) return;
+        onDisconnect();
     }
 
     private synchronized void ensureConnected() {
@@ -229,6 +311,25 @@ public final class BridgeConnection {
 
     /** RPC pass-through to the bridge. Returns the response payload future. */
     public CompletableFuture<JsonNode> sendRequest(String op, Map<String, Object> args) {
+        // Pnl-78/Web-08: in fed mode the portal owns no socket; route the RPC
+        // through the panel's live PipeClient via the delegate. Guard on the
+        // delegate (not connected) so an in-flight RPC during a transient
+        // disconnect surfaces the panel's own "not connected" error consistently.
+        if (fedMode) {
+            RpcDelegate d = rpcDelegate;
+            if (d == null) {
+                CompletableFuture<JsonNode> f = new CompletableFuture<>();
+                f.completeExceptionally(new IOException("bridge not connected"));
+                return f;
+            }
+            try {
+                return d.sendRequest(op, args);
+            } catch (Throwable t) {
+                CompletableFuture<JsonNode> f = new CompletableFuture<>();
+                f.completeExceptionally(t);
+                return f;
+            }
+        }
         PipeClient pc = pipeClient;
         if (pc == null || pc.isClosed()) {
             CompletableFuture<JsonNode> f = new CompletableFuture<>();

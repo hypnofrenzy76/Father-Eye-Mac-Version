@@ -2,6 +2,52 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: Web Portal reuses the panel's bridge connection — empty browser panels fixed (Pnl-78/Web-08)
+
+- **Browser panels were empty because the bridge is single-client.** The
+  bridge's accept loop services exactly ONE IPC session and only loops back to
+  `accept()` after that session ends. The panel already holds that one session,
+  so the in-process portal's own `BridgeConnection.start()` opened a SECOND TCP
+  socket that the bridge would never service — the portal handshake blocked
+  forever and every live browser tab (Stats/Players/Mobs/Mods/Map/Console)
+  stayed blank while the static HTTP shell still loaded.
+- **Fix: "fed mode" — the portal opens no IPC socket and reuses the panel's
+  live connection.** The portal now starts via `startEmbeddedFed(...)`, which
+  opens only its HTTP `ServerSocket`. The panel drives the portal:
+  - every inbound bridge frame (Snapshot/Delta/Event) is fanned to the portal
+    through a new `TopicDispatcher.setFrameTap` hook, in addition to the panel's
+    own UI handlers; the portal runs the SAME `{seq,data}` unwrap and
+    latest-snapshot backfill it used on its self-owned path, so browser data is
+    identical;
+  - the bridge handshake is translated into the portal's welcome JSON shape and
+    fed in so the browser banners and welcome-dependent UI populate immediately;
+  - browser RPCs are routed back through the panel's CURRENT live `PipeClient`
+    via a new `BridgeConnection.RpcDelegate`, resolved per-RPC so a panel
+    reconnect (which reassigns the client) is followed transparently.
+- **No second IPC client is ever created.** `startFed` shares the existing
+  `started` guard with the self-owned `start()`, and a `fedMode` flag makes the
+  reconnect loop / marker dialer unreachable, so the two paths can never both
+  arm.
+- **Bridge unchanged.** This is the panel/portal-side "Option A"; the bridge's
+  single-client design is untouched.
+- **Thread-safety.** The panel's `pipeClient` is now `volatile` (read by the
+  portal's RPC threads); the welcome JSON is built and published BEFORE the
+  launcher's RUNNING transition starts the portal, so the portal sees a
+  populated welcome.
+- **Triple Opus audit:** the single "CRITICAL" finding (welcome built after
+  `markRunning`) was a false positive — the code already orders the welcome
+  build before `markRunning`, exactly the recommended fix. All other findings
+  were CLEAN/LOW: panel already depends on `:webportal`, every referenced API is
+  public, no callers were broken, and the standalone `webportal` entrypoint
+  (`main()` → `startEmbedded`) is untouched.
+- **Build & deploy.** `:panel:compileJava`/`:webportal:compileJava` green;
+  `:panel:jpackageMacApp` rebuilt with the webportal jar bundled and deployed to
+  `/Applications/Father Eye.app`. No version bump (additive behavior fix on
+  0.3.3-mac.1).
+- Files: `panel/.../App.java`, `panel/.../ipc/TopicDispatcher.java`,
+  `panel/.../launcher/WebPortalLauncher.java`,
+  `webportal/.../BridgeConnection.java`, `webportal/.../WebPortalMain.java`.
+
 ## 2026-06-14, 0.3.3-mac.1: panel auto-starts the Web Portal with the server (Pnl-77b/Web-07b)
 
 - **The Father Eye panel now launches the Web Portal automatically.** Previously

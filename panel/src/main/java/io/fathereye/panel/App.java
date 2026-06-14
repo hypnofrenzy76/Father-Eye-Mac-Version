@@ -69,9 +69,20 @@ public final class App extends Application {
 
     private MainWindow mainWindow;
     private ExecutorService ipcExecutor;
-    private PipeClient pipeClient;
+    /** Pnl-78/Web-08: volatile because the Web Portal's RPC delegate
+     *  ({@code () -> pipeClient}) reads this field from the portal's
+     *  WebSocket reader threads, while tryConnect / onBridgeDisconnect on
+     *  other panel threads reassign it across reconnects. Volatile gives the
+     *  portal a consistent view of the current live client per RPC. */
+    private volatile PipeClient pipeClient;
     private PipeReader pipeReader;
     private final TopicDispatcher dispatcher = new TopicDispatcher();
+    /** Pnl-78/Web-08: the bridge welcome rendered into the portal's wire
+     *  shape, rebuilt on each successful handshake in {@link #tryConnect}.
+     *  Fed to the portal both on the RUNNING transition (for a portal started
+     *  after the handshake) and on every reconnect. Volatile: written by the
+     *  connect thread, read by the launcher state-sink thread. */
+    private volatile com.fasterxml.jackson.databind.JsonNode webPortalWelcomeJson;
 
     /** Pnl-75 (2026-06-14): hard ceiling on how long the pre-stop backup
      *  may delay an interactive Stop. The compressed external backup can
@@ -432,7 +443,21 @@ public final class App extends Application {
                         // so a live bridge marker now exists for the portal to
                         // dial. Bring the in-process Web Portal up so the remote
                         // browser console is reachable while the server runs.
-                        webPortalLauncher.start();
+                        // Pnl-78/Web-08: FED mode. The bridge is single-client and
+                        // the panel already holds the one IPC session, so the
+                        // portal must NOT open its own socket. It reuses the
+                        // panel's live connection: browser RPCs route through the
+                        // panel's current pipeClient (resolved per-call so a
+                        // reconnect is followed) and topic data is fed in via
+                        // onTopic/onBridgeConnected below.
+                        webPortalLauncher.start(() -> pipeClient);
+                        // Seed the just-started portal with the live handshake so
+                        // the browser populates immediately rather than waiting
+                        // for the next 1 Hz snapshot. webPortalWelcomeJson is set
+                        // by tryConnect right before markRunning() returns.
+                        if (webPortalWelcomeJson != null) {
+                            webPortalLauncher.onBridgeConnected(webPortalWelcomeJson);
+                        }
                         mainWindow.consolePane().onLogLine(
                                 asSyntheticLogLineNode("Web Portal started on port 8765 (reachable over Tailscale at http://<this-mac>:8765)."));
                     } else if ((state == ServerLauncher.State.STOPPED
@@ -847,6 +872,14 @@ public final class App extends Application {
             mainWindow.mapPane().onChunksSnapshot(payload);
             if (metricsDb != null) metricsDb.writeMetric("chunks_topic", payload);
         });
+        // Pnl-78/Web-08: fan EVERY inbound frame out to the in-process Web
+        // Portal so the browser panels populate from the panel's single live
+        // bridge connection (the bridge is single-client; the portal must not
+        // open a second socket). The portal unwraps {seq,data} itself, exactly
+        // as its own reader path would, so we forward the raw payload here. The
+        // tap is a no-op when the portal is not running.
+        dispatcher.setFrameTap((kind, topic, rawPayload) ->
+                webPortalLauncher.onTopic(kind, topic, rawPayload));
     }
 
     private void tryConnect() {
@@ -973,6 +1006,33 @@ public final class App extends Application {
                             + " dims=" + welcome.dimensionCount
                             + " bridge=" + welcome.bridgeVersion));
 
+            // Pnl-71: check for Arcanum capability and show/hide the tab.
+            // Pnl-78/Web-08: computed BEFORE markRunning() because the welcome
+            // JSON (which embeds hasArcanum) must be ready before the RUNNING
+            // state-sink fires -- that sink starts the Web Portal and reads
+            // webPortalWelcomeJson to seed the browser. Building it after
+            // markRunning() would race the portal start and leave the first
+            // browser load un-bannered.
+            boolean hasArcanum = false;
+            if (welcome.capabilities != null) {
+                for (String cap : welcome.capabilities) {
+                    if ("arcanum".equals(cap)) {
+                        hasArcanum = true;
+                        break;
+                    }
+                }
+            }
+
+            // Pnl-78/Web-08: render the bridge welcome into the portal's wire
+            // shape and publish it. The portal builds the same object from its
+            // own WelcomeInfo on the self-owned path; in fed mode the panel owns
+            // the handshake, so we translate here. Stored BEFORE markRunning so a
+            // portal started by the RUNNING transition reads it, AND fed
+            // immediately so an already-running portal (reconnect) re-banners
+            // without waiting. onBridgeConnected is a no-op when not running.
+            webPortalWelcomeJson = buildWebPortalWelcomeJson(welcome, m, hasArcanum);
+            webPortalLauncher.onBridgeConnected(webPortalWelcomeJson);
+
             // Pnl-44 (2026-04-26): bridge handshake is the real
             // "server is ready to serve" signal. Promote launcher
             // state from STARTING to RUNNING here. Previously the
@@ -1000,16 +1060,7 @@ public final class App extends Application {
             // entities or TEs) still appear with an Idle placeholder.
             mainWindow.modsPane().setKnownMods(welcome.modIds);
 
-            // Pnl-71: check for Arcanum capability and show/hide the tab
-            boolean hasArcanum = false;
-            if (welcome.capabilities != null) {
-                for (String cap : welcome.capabilities) {
-                    if ("arcanum".equals(cap)) {
-                        hasArcanum = true;
-                        break;
-                    }
-                }
-            }
+            // Pnl-71: surface the Arcanum tab (capability computed above).
             mainWindow.setArcanumCapability(hasArcanum);
             if (hasArcanum) {
                 mainWindow.arcanumPane().bindPipeClient(pipeClient);
@@ -1249,6 +1300,13 @@ public final class App extends Application {
      */
     private void onBridgeDisconnect() {
         update("Bridge disconnected. Watching for reconnect...");
+        // Pnl-78/Web-08: tell the in-process Web Portal the bridge feed has
+        // gone so the browser shows "disconnected" and clears stale panels.
+        // The portal stays UP (its HTTP server keeps serving) so the operator
+        // can still browse; it re-banners when the panel reconnects and feeds
+        // a fresh welcome. No-op when the portal is not running.
+        webPortalWelcomeJson = null;
+        webPortalLauncher.onBridgeDisconnected();
         if (watchdog != null) watchdog.disarm();
         // Pnl-67: reset the uptime label so the user doesn't see a
         // stale ever-growing duration after the server stopped.
@@ -1284,5 +1342,35 @@ public final class App extends Application {
         }, "FatherEye-Reconnect");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Pnl-78/Web-08: translate the panel's handshake {@link PipeClient.WelcomeInfo}
+     * (plus the marker's serverDir / startedAtEpochMs, which the handshake does
+     * not carry) into the exact JSON shape the Web Portal browser expects. This
+     * mirrors {@code BridgeConnection.buildWelcomeJson} in the webportal module so
+     * the fed path produces a welcome indistinguishable from the self-owned path.
+     */
+    private static com.fasterxml.jackson.databind.JsonNode buildWebPortalWelcomeJson(
+            PipeClient.WelcomeInfo info,
+            MarkerDiscovery.Marker marker,
+            boolean hasArcanum) {
+        com.fasterxml.jackson.databind.node.ObjectNode n =
+                io.fathereye.panel.ipc.PipeCodecs.JSON.createObjectNode();
+        n.put("bridgeVersion", info.bridgeVersion);
+        n.put("mcVersion", info.mcVersion);
+        n.put("forgeVersion", info.forgeVersion);
+        n.put("instanceUuid", info.instanceUuid);
+        n.put("serverHeapMaxBytes", info.serverHeapMaxBytes);
+        n.put("serverDir", marker.serverDir);
+        n.put("startedAtEpochMs", marker.startedAtEpochMs);
+        n.set("dimensions", io.fathereye.panel.ipc.PipeCodecs.JSON.valueToTree(
+                info.dimensions != null ? info.dimensions : new String[0]));
+        n.set("modIds", io.fathereye.panel.ipc.PipeCodecs.JSON.valueToTree(
+                info.modIds != null ? info.modIds : new String[0]));
+        n.set("capabilities", io.fathereye.panel.ipc.PipeCodecs.JSON.valueToTree(
+                info.capabilities != null ? info.capabilities : new String[0]));
+        n.put("hasArcanum", hasArcanum);
+        return n;
     }
 }

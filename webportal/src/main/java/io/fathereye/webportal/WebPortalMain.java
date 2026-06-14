@@ -97,6 +97,36 @@ public final class WebPortalMain {
             LOG.info("Web portal already running; ignoring duplicate start.");
             return;
         }
+        wireBridgeListener();
+        bridge.start();
+        startHttp(host, port);
+    }
+
+    /**
+     * Pnl-78/Web-08: start the portal in FED mode for in-process hosting by the
+     * panel. The portal does NOT open its own bridge socket (the bridge is
+     * single-client and the panel already holds it); instead the panel drives
+     * connection state and topic data through {@link #feedBridgeConnected},
+     * {@link #feedBridgeTopic} and {@link #feedBridgeDisconnected}, and browser
+     * RPCs are routed through {@code rpcDelegate} (backed by the panel's live
+     * PipeClient). Only the HTTP {@code ServerSocket} is opened here.
+     *
+     * <p>Idempotent: a second call while already started is a no-op.
+     */
+    public synchronized void startEmbeddedFed(String host, int port,
+                                              BridgeConnection.RpcDelegate rpcDelegate) throws IOException {
+        if (httpServer != null) {
+            LOG.info("Web portal already running; ignoring duplicate start.");
+            return;
+        }
+        wireBridgeListener();
+        bridge.startFed(rpcDelegate);
+        startHttp(host, port);
+    }
+
+    /** Register the single bridge listener that fans bridge events out to the
+     *  live WebSocket sessions. Shared by both start paths. */
+    private void wireBridgeListener() {
         bridge.addListener(new BridgeConnection.Listener() {
             @Override public void onTopic(String kind, String topic, JsonNode payload) {
                 broadcastTopic(kind, topic, payload);
@@ -108,8 +138,10 @@ public final class WebPortalMain {
                 broadcastDisconnected();
             }
         });
-        bridge.start();
+    }
 
+    /** Open the HTTP server and record its handle. Shared by both start paths. */
+    private void startHttp(String host, int port) throws IOException {
         HttpServerCore server = new HttpServerCore(host, port, this::route);
         server.start();
         this.httpServer = server;
@@ -117,6 +149,22 @@ public final class WebPortalMain {
         LOG.info("Father Eye Web Portal ready. Open it over Tailscale at http://<this-mac-tailscale-name>:{}", port);
         LOG.info("Bind host {} (use --host=127.0.0.1 to restrict to loopback).", host);
     }
+
+    // ---- Pnl-78/Web-08: fed-mode inputs forwarded from the panel ----
+
+    /** Forward the panel's bridge handshake into the portal (fed mode). */
+    public void feedBridgeConnected(JsonNode welcome) { bridge.feedConnected(welcome); }
+
+    /** Forward one panel topic frame into the portal (fed mode). The payload is
+     *  the raw bridge payload the panel's dispatcher delivered; BridgeConnection
+     *  unwraps {@code {seq,data}} for Snapshot/Delta exactly as the self-owned
+     *  reader path does. */
+    public void feedBridgeTopic(String kind, String topic, JsonNode payload) {
+        bridge.feedTopic(kind, topic, payload);
+    }
+
+    /** Forward a panel bridge-disconnect into the portal (fed mode). */
+    public void feedBridgeDisconnected() { bridge.feedDisconnected(); }
 
     /**
      * Pnl-77b/Web-07b: stop the HTTP server and bridge connection. Safe to
