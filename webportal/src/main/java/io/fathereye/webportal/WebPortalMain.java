@@ -33,6 +33,8 @@ public final class WebPortalMain {
 
     private final Auth auth = new Auth();
     private final BridgeConnection bridge = new BridgeConnection();
+    private final BackupManager backups = new BackupManager();
+    private final PlayerRestoreService playerRestore = new PlayerRestoreService();
     private final CopyOnWriteArrayList<WsSession> sessions = new CopyOnWriteArrayList<>();
 
     public static void main(String[] args) throws Exception {
@@ -119,10 +121,176 @@ public final class WebPortalMain {
                 return false;
             case "/ws":
                 return handleWebSocketUpgrade(req, resp);
+            case "/api/backups":
+                handleApiBackups(req, resp);
+                return false;
+            case "/api/backup/run":
+                handleApiBackupRun(req, resp);
+                return false;
+            case "/api/rollback":
+                handleApiRollback(req, resp);
+                return false;
+            case "/api/job":
+                handleApiJob(req, resp);
+                return false;
+            case "/api/backup/players":
+                handleApiBackupPlayers(req, resp);
+                return false;
+            case "/api/player/restore":
+                handleApiPlayerRestore(req, resp);
+                return false;
             default:
                 resp.text(404, "not found");
                 return false;
         }
+    }
+
+    // ---- backup / rollback HTTP API ----
+
+    private void handleApiBackups(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        resp.json(200, backups.list().toString());
+    }
+
+    private void handleApiBackupRun(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        if (!"POST".equalsIgnoreCase(req.method)) { resp.text(400, "POST only"); return; }
+        String label = null;
+        try {
+            JsonNode b = PipeCodecs.JSON.readTree(req.body == null || req.body.length == 0 ? "{}"
+                    : new String(req.body, StandardCharsets.UTF_8));
+            label = text(b, "label");
+        } catch (Exception ignored) {}
+        boolean started = backups.startBackup(label);
+        String body = started
+                ? "{\"started\":true}"
+                : "{\"started\":false,\"error\":\"a job is already running\"}";
+        resp.json(started ? 200 : 409, body);
+    }
+
+    private void handleApiRollback(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        if (!"POST".equalsIgnoreCase(req.method)) { resp.text(400, "POST only"); return; }
+        // Defence in depth: refuse rollback while the server is up. The
+        // bridge stays connected only while the Minecraft server runs, so a
+        // live bridge means the world is in use.
+        if (bridge.isConnected()) {
+            resp.json(409, "{\"started\":false,\"error\":\"server is running; stop it before rolling back\"}");
+            return;
+        }
+        String id, scope;
+        try {
+            JsonNode b = PipeCodecs.JSON.readTree(req.body == null || req.body.length == 0 ? "{}"
+                    : new String(req.body, StandardCharsets.UTF_8));
+            id = text(b, "id");
+            scope = text(b, "scope");
+        } catch (Exception e) {
+            resp.json(400, "{\"started\":false,\"error\":\"bad request body\"}");
+            return;
+        }
+        boolean started = backups.startRollback(id, scope);
+        String body = started
+                ? "{\"started\":true}"
+                : "{\"started\":false,\"error\":\"rejected (job running or invalid input)\"}";
+        resp.json(started ? 200 : 409, body);
+    }
+
+    private void handleApiJob(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        resp.json(200, backups.jobStatus().toString());
+    }
+
+    // ---- live player-state restore ----
+
+    /** List the players whose data is stored in a given backup. */
+    private void handleApiBackupPlayers(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        String id = queryParam(req.query, "id");
+        resp.json(200, playerRestore.listPlayers(id).toString());
+    }
+
+    /**
+     * Restore one player's full saved state from a backup into the running
+     * server. The web portal extracts the {@code <uuid>.dat} from the backup
+     * archive on the external drive, base64s it, and forwards it to the
+     * bridge's {@code player_restoreState} op. The bridge injects it into the
+     * live player (online) or writes it to disk (offline), taking its own
+     * pre-restore safety snapshot either way.
+     *
+     * <p>Requires the bridge (and therefore the server) to be up: a live
+     * inventory injection only makes sense while the world is running, and
+     * the bridge owns the playerdata directory for the offline write too.
+     */
+    private void handleApiPlayerRestore(HttpServerCore.Request req, HttpServerCore.Response resp) {
+        if (!isAuthed(req)) { resp.text(401, "unauthorized"); return; }
+        if (!"POST".equalsIgnoreCase(req.method)) { resp.text(400, "POST only"); return; }
+        if (!bridge.isConnected()) {
+            resp.json(409, "{\"ok\":false,\"error\":\"server is not running; start it to restore live player state\"}");
+            return;
+        }
+        String id, uuid;
+        try {
+            JsonNode b = PipeCodecs.JSON.readTree(req.body == null || req.body.length == 0 ? "{}"
+                    : new String(req.body, StandardCharsets.UTF_8));
+            id = text(b, "id");
+            uuid = text(b, "uuid");
+        } catch (Exception e) {
+            resp.json(400, "{\"ok\":false,\"error\":\"bad request body\"}");
+            return;
+        }
+        if (!PlayerRestoreService.isValidBackupId(id)) {
+            resp.json(400, "{\"ok\":false,\"error\":\"invalid backup id\"}");
+            return;
+        }
+        if (!PlayerRestoreService.isValidUuid(uuid)) {
+            resp.json(400, "{\"ok\":false,\"error\":\"invalid player uuid\"}");
+            return;
+        }
+
+        byte[] dat = playerRestore.extractPlayerDat(id, uuid);
+        if (dat == null) {
+            resp.json(404, "{\"ok\":false,\"error\":\"player not found in this backup\"}");
+            return;
+        }
+
+        Map<String, Object> rpcArgs = new LinkedHashMap<>();
+        rpcArgs.put("playerUuid", uuid);
+        rpcArgs.put("nbtBase64", java.util.Base64.getEncoder().encodeToString(dat));
+        // Fallbacks the bridge uses only if the live server can't report its
+        // own world path; harmless to always include.
+        rpcArgs.put("serverDir", PortalConfig.serverDir().toString());
+
+        try {
+            JsonNode result = bridge.sendRequest("player_restoreState", rpcArgs)
+                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
+            ObjectNode out = PipeCodecs.JSON.createObjectNode();
+            out.put("ok", true);
+            out.set("result", result);
+            resp.json(200, out.toString());
+        } catch (java.util.concurrent.TimeoutException e) {
+            resp.json(504, "{\"ok\":false,\"error\":\"bridge timed out restoring player\"}");
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            ObjectNode out = PipeCodecs.JSON.createObjectNode();
+            out.put("ok", false);
+            out.put("error", "restore failed: " + cause.getMessage());
+            resp.json(502, out.toString());
+        }
+    }
+
+    /** Extract a single decoded query parameter by name, or null. */
+    private static String queryParam(String query, String name) {
+        if (query == null || query.isEmpty()) return null;
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            String k = eq >= 0 ? pair.substring(0, eq) : pair;
+            try {
+                if (URLDecoder.decode(k, "UTF-8").equals(name)) {
+                    return eq >= 0 ? URLDecoder.decode(pair.substring(eq + 1), "UTF-8") : "";
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     private boolean isAuthed(HttpServerCore.Request req) {
@@ -181,6 +349,7 @@ public final class WebPortalMain {
         // waiting for the next 1 Hz snapshot.
         try {
             if (bridge.isConnected() && bridge.welcome() != null) {
+                session.send(wrapStatus("connected"));
                 session.send(wrap("welcome", bridge.welcome()));
             } else {
                 session.send(wrapStatus("disconnected"));
@@ -265,6 +434,7 @@ public final class WebPortalMain {
     }
 
     private void broadcastWelcome(JsonNode welcome) {
+        broadcast(wrapStatus("connected"));
         broadcast(wrap("welcome", welcome));
     }
 

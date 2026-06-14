@@ -39,6 +39,10 @@ public final class RpcHandlers {
         // TickStateMirror renders on the tick thread); serve it inline
         // on the IPC thread so tile bursts never queue tick-thread work.
         d.registerDirect("chunk_tile", io.fathereye.bridge.rpc.ChunkTileHandler::handle);
+        // Live player-state restore (inject backup <uuid>.dat NBT into an
+        // online player without a disconnect, or write it for an offline
+        // one). Runs on the tick thread so it may touch live entities.
+        PlayerRestoreHandler.register(d);
     }
 
     public static void registerJfr(RpcDispatcher d, io.fathereye.bridge.profiler.JfrController jfr) {

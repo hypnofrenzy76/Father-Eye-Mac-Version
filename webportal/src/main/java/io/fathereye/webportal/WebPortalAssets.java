@@ -75,6 +75,7 @@ public final class WebPortalAssets {
             <button data-tab="mods">Mods</button>
             <button data-tab="map">Map</button>
             <button data-tab="world">World</button>
+            <button data-tab="backups">Backups</button>
             <button data-tab="arcanum" id="arcanumTab" class="hidden">Arcanum</button>
           </nav>
           <main>
@@ -174,6 +175,43 @@ public final class WebPortalAssets {
                   <input id="timeValue" type="number" placeholder="ticks">
                   <button id="timeSet">Set time</button>
                 </span>
+              </div>
+            </section>
+
+            <!-- BACKUPS -->
+            <section id="tab-backups" class="tab">
+              <div class="backup-toolbar">
+                <input id="bkLabel" type="text" placeholder="Optional label for this backup">
+                <button id="bkRun">Back up now</button>
+                <button id="bkRefresh">Refresh list</button>
+                <span id="bkDrive" class="meter"></span>
+              </div>
+              <div id="bkJob" class="bk-job hidden"></div>
+              <p class="meter">Backups are compressed and stored on the external drive. World and player data
+                can be restored independently. Rollback requires the server to be stopped.</p>
+              <table id="backupsTable">
+                <thead><tr><th>Created</th><th>Label</th><th>World</th><th>Contents</th>
+                  <th>Size</th><th>Restore</th></tr></thead>
+                <tbody></tbody>
+              </table>
+
+              <!-- Live per-player restore modal -->
+              <div id="bkPlayerModal" class="bk-modal hidden">
+                <div class="bk-modal-card">
+                  <div class="bk-modal-head">
+                    <strong id="bkPmTitle">Restore a player</strong>
+                    <button id="bkPmClose" class="bk-modal-x">&times;</button>
+                  </div>
+                  <p class="meter">Inject one player's full saved state (inventory, ender chest, XP,
+                    health, position) from this backup into the running server. Online players are
+                    restored live without a disconnect; offline players have their save file written.
+                    A safety snapshot of their current state is taken first.</p>
+                  <p class="meter" id="bkPmNote"></p>
+                  <table id="bkPlayersTable">
+                    <thead><tr><th>Name</th><th>UUID</th><th>Action</th></tr></thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
               </div>
             </section>
 
@@ -285,6 +323,30 @@ public final class WebPortalAssets {
         /* arcanum */
         #arcConfig{width:100%;height:40vh;background:#0e1014;color:var(--fg);border:1px solid var(--line);
           border-radius:8px;padding:10px;font-family:SFMono-Regular,Menlo,monospace;font-size:12px}
+        /* backups */
+        .backup-toolbar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+        .backup-toolbar input{padding:7px;border-radius:5px;border:1px solid var(--line);background:#11131a;
+          color:var(--fg);min-width:240px}
+        .bk-job{margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel)}
+        .bk-job.running{border-color:#6a5420;background:#3a2e12;color:#ffe9b0}
+        .bk-job.ok{border-color:#1f5a30;background:#163d22;color:#bff0c8}
+        .bk-job.fail{border-color:#5a302c;background:#3d1816;color:#ffb4ae}
+        .bk-job pre{margin:8px 0 0;max-height:160px;overflow:auto;font-family:SFMono-Regular,Menlo,monospace;
+          font-size:11px;white-space:pre-wrap;color:var(--muted)}
+        #backupsTable td button{margin-right:4px}
+        .bk-restore-world{background:#1f3d52;border-color:#2c5a78}
+        .bk-restore-player{background:#3d2f12;border-color:#6a5420}
+        .bk-restore-both{background:#3a201e;border-color:#5a302c;color:#ffb4ae}
+        .bk-restore-live{background:#16323d;border-color:#1f6478;color:#aee7f0}
+        .bk-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;
+          justify-content:center;z-index:50}
+        .bk-modal.hidden{display:none}
+        .bk-modal-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+          padding:16px 18px;max-width:680px;width:92%;max-height:80vh;overflow:auto}
+        .bk-modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+        .bk-modal-x{background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1}
+        #bkPlayersTable{width:100%;margin-top:8px}
+        #bkPlayersTable td button{margin:0}
         """;
 
     public static final String APP_JS = """
@@ -320,7 +382,7 @@ public final class WebPortalAssets {
 
         function onMessage(m){
           if(m.type === 'welcome'){ welcome = m.payload; onWelcome(m.payload); }
-          else if(m.type === 'status'){ if(m.status === 'disconnected') setBadge('disconnected'); }
+          else if(m.type === 'status'){ if(m.status === 'disconnected') setBadge('disconnected'); else if(m.status === 'connected') setBadge('running'); }
           else if(m.type === 'topic'){ onTopic(m.topic, m.kind, m.payload); }
           else if(m.type === 'rpcResult'){
             const p = pending.get(m.reqId);
@@ -603,6 +665,138 @@ public final class WebPortalAssets {
           });
         }
 
+        // ---- BACKUPS ----
+        let bkJobTimer=null, bkLastJobUpdate=0;
+        function bkBytes(n){ if(n==null||n<0) return '--'; const u=['B','KB','MB','GB','TB']; let i=0,v=n;
+          while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v>=10||i===0?0:1)+u[i]; }
+        function bkDate(epoch){ if(!epoch) return '--'; return new Date(epoch*1000).toLocaleString(); }
+        async function bkLoad(){
+          try{
+            const r=await fetch('/api/backups',{headers:{'Accept':'application/json'}});
+            if(!r.ok){ toast('Backup list failed ('+r.status+')'); return; }
+            const data=await r.json();
+            const meta=data.meta||{};
+            const drive=document.getElementById('bkDrive');
+            drive.textContent = (meta.mounted?'Drive OK':'DRIVE NOT MOUNTED')+' - free '+bkBytes(meta.freeBytes)+
+              ' - '+(meta.externalDir||'');
+            drive.style.color = meta.mounted ? '#8b93a3' : '#d4504a';
+            const tb=document.querySelector('#backupsTable tbody'); tb.innerHTML='';
+            (data.backups||[]).forEach(bk=>{
+              const tr=document.createElement('tr');
+              const contents=[]; if(bk.hasWorld)contents.push('world');
+                if(bk.hasPlayerData)contents.push('players'); if(bk.hasServer)contents.push('server');
+              tr.innerHTML=td(bkDate(bk.createdEpoch))+td(bk.label||'')+td(bk.worldName||'')+
+                td(contents.join(', ')+(bk.kind==='legacy'?' (legacy)':''))+td(bkBytes(bk.totalBytes));
+              const cell=document.createElement('td');
+              if(bk.kind==='structured'){
+                if(bk.hasWorld){ const wb=btn('World',()=>bkRollback(bk.id,'world')); wb.className='bk-restore-world'; cell.appendChild(wb); }
+                if(bk.hasPlayerData){ const pb=btn('Players',()=>bkRollback(bk.id,'playerdata')); pb.className='bk-restore-player'; cell.appendChild(pb); }
+                if(bk.hasWorld&&bk.hasPlayerData){ const bb=btn('Both',()=>bkRollback(bk.id,'both')); bb.className='bk-restore-both'; cell.appendChild(bb); }
+                if(bk.hasPlayerData){ const lb=btn('Live Players',()=>bkOpenPlayers(bk.id,bk.label)); lb.className='bk-restore-live'; cell.appendChild(lb); }
+              } else {
+                cell.innerHTML='<span class="meter">manual restore</span>';
+              }
+              tr.appendChild(cell); tb.appendChild(tr);
+            });
+          }catch(e){ toast('Backup list error: '+e.message); }
+        }
+        async function bkRunNow(){
+          const label=document.getElementById('bkLabel').value.trim();
+          try{
+            const r=await fetch('/api/backup/run',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({label})});
+            const j=await r.json().catch(()=>({}));
+            if(!r.ok||!j.started){ toast('Backup not started: '+(j.error||r.status)); }
+            else { toast('Backup started'); document.getElementById('bkLabel').value=''; bkStartPolling(); }
+          }catch(e){ toast('Backup error: '+e.message); }
+        }
+        async function bkRollback(id,scope){
+          const label = scope==='world'?'WORLD':scope==='playerdata'?'PLAYER DATA':'WORLD AND PLAYER DATA';
+          if(!confirm('Restore '+label+' from backup '+id+'?\\n\\nThe server MUST be stopped. A safety snapshot of the current state is taken first. This overwrites the live '+label.toLowerCase()+'.')) return;
+          try{
+            const r=await fetch('/api/rollback',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id,scope})});
+            const j=await r.json().catch(()=>({}));
+            if(!r.ok||!j.started){ toast('Rollback rejected: '+(j.error||r.status)); }
+            else { toast('Rollback started'); bkStartPolling(); }
+          }catch(e){ toast('Rollback error: '+e.message); }
+        }
+        // ---- live per-player restore ----
+        let bkPmId=null;
+        async function bkOpenPlayers(id,label){
+          bkPmId=id;
+          document.getElementById('bkPmTitle').textContent='Restore a player from '+id+(label?(' ('+label+')'):'');
+          const note=document.getElementById('bkPmNote');
+          const running=document.getElementById('stateBadge').classList.contains('state-running');
+          note.textContent = running ? '' : 'Server is not running. Start it to restore live player state.';
+          note.style.color = running ? '' : '#d4504a';
+          const tb=document.querySelector('#bkPlayersTable tbody'); tb.innerHTML='<tr><td colspan="3" class="meter">Loading...</td></tr>';
+          document.getElementById('bkPlayerModal').classList.remove('hidden');
+          try{
+            const r=await fetch('/api/backup/players?id='+encodeURIComponent(id),{headers:{'Accept':'application/json'}});
+            const j=await r.json().catch(()=>({}));
+            if(!r.ok||!j.ok){ tb.innerHTML='<tr><td colspan="3" class="meter">'+(j.error||('error '+r.status))+'</td></tr>'; return; }
+            const players=j.players||[];
+            if(!players.length){ tb.innerHTML='<tr><td colspan="3" class="meter">No player data in this backup.</td></tr>'; return; }
+            tb.innerHTML='';
+            players.forEach(p=>{
+              const tr=document.createElement('tr');
+              tr.innerHTML=td(p.name||'(unknown)')+td(short(p.uuid));
+              const cell=document.createElement('td');
+              const rb=btn('Restore Live',()=>bkRestorePlayer(p.uuid,p.name)); rb.className='bk-restore-live';
+              cell.appendChild(rb); tr.appendChild(cell); tb.appendChild(tr);
+            });
+          }catch(e){ tb.innerHTML='<tr><td colspan="3" class="meter">'+e.message+'</td></tr>'; }
+        }
+        function bkClosePlayers(){ document.getElementById('bkPlayerModal').classList.add('hidden'); bkPmId=null; }
+        async function bkRestorePlayer(uuid,name){
+          if(!bkPmId) return;
+          const who=name||uuid;
+          if(!confirm('Restore '+who+'\\'s full saved state from backup '+bkPmId+'?\\n\\nThis overwrites their CURRENT inventory, XP, health, and position with the backup. If they are online it applies live. A safety snapshot is taken first.')) return;
+          try{
+            const r=await fetch('/api/player/restore',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({id:bkPmId,uuid})});
+            const j=await r.json().catch(()=>({}));
+            if(!r.ok||!j.ok){ toast('Restore failed: '+(j.error||r.status)); return; }
+            const mode=(j.result&&j.result.mode)||'';
+            toast('Restored '+who+(mode?(' ('+mode+')'):'')); 
+          }catch(e){ toast('Restore error: '+e.message); }
+        }
+        function bkRenderJob(j){
+          const el=document.getElementById('bkJob');
+          if(!j || j.type==='none'){ el.classList.add('hidden'); return; }
+          el.classList.remove('hidden');
+          el.classList.remove('running','ok','fail');
+          if(j.running) el.classList.add('running');
+          else if(j.ok===true) el.classList.add('ok');
+          else if(j.ok===false) el.classList.add('fail');
+          const logHtml = j.log ? '<pre>'+j.log.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre>' : '';
+          el.innerHTML='<strong>'+(j.message||'')+'</strong>'+logHtml;
+        }
+        async function bkPollJob(){
+          try{
+            const r=await fetch('/api/job',{headers:{'Accept':'application/json'}});
+            if(!r.ok) return;
+            const j=await r.json();
+            bkRenderJob(j);
+            if(!j.running){
+              clearInterval(bkJobTimer); bkJobTimer=null;
+              if(j.ok===true){ toast(j.message); bkLoad(); }
+              else if(j.ok===false){ toast(j.message); }
+            }
+          }catch(e){}
+        }
+        function bkStartPolling(){
+          bkPollJob();
+          if(!bkJobTimer) bkJobTimer=setInterval(bkPollJob,2000);
+        }
+        document.getElementById('bkRun').onclick=bkRunNow;
+        document.getElementById('bkRefresh').onclick=bkLoad;
+        document.getElementById('bkPmClose').onclick=bkClosePlayers;
+        document.getElementById('bkPlayerModal').addEventListener('click',e=>{
+          if(e.target.id==='bkPlayerModal') bkClosePlayers();
+        });
+
         // ---- tabs ----
         document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
           document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('active'));
@@ -612,6 +806,7 @@ public final class WebPortalAssets {
           if(b.dataset.tab==='map') drawMap();
           if(b.dataset.tab==='stats') drawTps();
           if(b.dataset.tab==='arcanum') loadArcanum();
+          if(b.dataset.tab==='backups'){ bkLoad(); bkPollJob(); }
         });
 
         // ---- helpers ----

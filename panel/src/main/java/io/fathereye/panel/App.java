@@ -526,11 +526,13 @@ public final class App extends Application {
                         // Skip silently; we backup live worlds only.
                         return;
                     }
-                    // Mac fork (audit 10 B1): early-return when
-                    // backupDir is empty so the hourly executor doesn't
-                    // throw / spam status updates every hour.
-                    if (appConfig.backup.backupDir == null
-                            || appConfig.backup.backupDir.isEmpty()) {
+                    // Web-03/Pnl-74 (2026-06-14): the compressed-external
+                    // flow keys off externalBackupDir, not the legacy
+                    // internal backupDir. Skip only when no external
+                    // destination is configured (runBackup also no-ops
+                    // and logs when the volume isn't mounted).
+                    if (appConfig.backup.externalBackupDir == null
+                            || appConfig.backup.externalBackupDir.isEmpty()) {
                         return;
                     }
                     update("Hourly backup running...");

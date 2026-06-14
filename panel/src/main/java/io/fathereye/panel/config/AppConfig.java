@@ -244,6 +244,18 @@ public final class AppConfig {
         // server-folder choice flows through. AppConfig.load() also
         // overrides this when cwd-auto-detection finds a Forge server.
         public String backupDir = "";
+        /** Web-03/Pnl-74 (2026-06-14): compressed-backup destination on
+         *  the external drive. All backups (manual, hourly, pre-stop)
+         *  now stream tar+gzip into {@code <externalBackupDir>/fe-<ts>/}
+         *  as separate world / playerdata / server archives plus a
+         *  manifest. No uncompressed internal world copy is ever
+         *  written. Empty falls back to the documented default external
+         *  volume path inside BackupService. */
+        public String externalBackupDir = "/Volumes/Server Backups/backups";
+        /** Web-03/Pnl-74: free-space floor (GB) on the external drive.
+         *  The backup script prunes the oldest backups while free space
+         *  is below this. */
+        public int minFreeGb = 60;
         /** Pnl-54 (audit fix, 2026-04-27): default 10 -> 0 (unlimited).
          *  Pre-Pnl-54 retainCount was the only retention rule and 10
          *  worked for pre-stop backups (one per server stop). With

@@ -2,6 +2,66 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: compressed external backups + live player restore (Bkp-01)
+
+- **Disk-space fix.** The old `BackupService` wrote full, uncompressed
+  copies of the world+config into `<server>/Desktop/Server/backups`,
+  which had grown to **18 GB on the internal disk**. Backups now go to
+  the external "Server Backups" volume as gzip-compressed archives, and
+  the stale 18 GB internal folder was removed (reclaimed ~19 GB; free
+  space on the Data volume went 147 GiB -> 166 GiB).
+- **Structured, independently-rollbackable archives.** `fe-backup.sh`
+  now writes `<dest>/fe-<timestamp>/` containing `world.tar.gz` (world
+  minus the player-owned subtrees), `playerdata.tar.gz` (only the
+  player-owned subtrees), an optional server-config archive, and a JSON
+  manifest. This lets the world and player data be rolled back
+  independently. `fe-rollback.sh` restores either stream atomically.
+  Space-based retention prunes oldest `fe-*` (and legacy
+  `thaumaturgy-*.tar.gz`) archives to keep the drive above its free-GB
+  floor.
+- **Backups tab in the web portal.** `BackupManager` + new
+  `/api/backup/*` routes drive a full Backups tab: list archives, run a
+  backup, and roll world/playerdata back independently from the browser.
+- **NEW: live player-state restore (no disconnect).** An operator can
+  restore a single player's full saved state (inventory, ender chest,
+  XP, health, food, position, dimension, abilities) from any structured
+  backup while the server is running:
+  - `PlayerRestoreService` (web portal) extracts exactly one
+    `<uuid>.dat` out of a backup's `playerdata.tar.gz` via `tar`, with
+    inputs tightly validated (backup id `fe-YYYYMMDD-HHMMSS`, player id a
+    canonical dashed UUID) so nothing can smuggle a path/option into the
+    `tar` arg list. The `.dat` bytes are base64'd and handed to the
+    bridge.
+  - `PlayerRestoreHandler` (bridge, runs on the tick thread) injects the
+    NBT with `ServerPlayerEntity.load(...)` — the same entry point
+    vanilla login uses — then resends inventory/health/XP/abilities and a
+    real cross-dimension teleport to the client so the screen updates
+    immediately. Offline players get the `.dat` written atomically for
+    next login. A timestamped pre-restore safety snapshot is taken either
+    way so a bad restore can be undone.
+  - UI: a "Live Players" action on each backup row opens a modal to pick
+    a player and restore them; `/api/backup/players` and
+    `/api/player/restore` back it.
+- **Triple-audit (rule 9) + fixes applied.** Three parallel Opus
+  reviewers (Minecraft-correctness, security, JS/UI) ran against the
+  restore path. Fixes landed:
+  - **Cross-dimension desync.** `Entity.load()` sets the dimension
+    reference but does not move the entity between the source/target
+    `ServerWorld` registries; the follow-up `teleportTo` would then try
+    to remove it from a world it was never in. The handler now strips
+    `"Dimension"` from the NBT copy before `load()` when the target
+    differs, keeping the live entity in its correctly-registered world,
+    then performs an explicit fully-registered cross-dimension teleport.
+  - **`tar` pipe deadlock.** Listing merges stderr into stdout
+    (`redirectErrorStream(true)`); single-member extraction keeps stderr
+    separate (so binary `.dat` bytes aren't corrupted) and drains it on a
+    dedicated daemon thread so a chatty `tar` can never fill the stderr
+    pipe and deadlock the reader.
+  - **Memory guard.** A 32 MB `MAX_DAT_BYTES` cap aborts an oversized
+    extract instead of buffering unbounded bytes.
+  - One JS-escaping flag was verified a false positive (the `\\'s`
+    sequence in the Java text block produces correct JS) and left as-is.
+
 ## 2026-06-14, 0.3.3-mac.1: web portal empty-tabs fix (Web-02)
 
 - **Fixed: all web portal dashboard tabs were empty** (Stats, Players,

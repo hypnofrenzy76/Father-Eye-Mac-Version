@@ -1,137 +1,142 @@
 package io.fathereye.panel.launcher;
 
+import io.fathereye.panel.util.PlatformPaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.file.FileVisitResult;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.stream.Stream;
+import java.util.Set;
 
 /**
- * Pre-stop world backup. Copies the world directory (and optionally configs +
- * mods) to a timestamped folder under the configured backup root, then
- * applies retention to keep at most N copies.
+ * Compressed external backup driver.
+ *
+ * <p>Web-03/Pnl-74 (2026-06-14): rewritten. Previously this class copied the
+ * world directory uncompressed into {@code <backupDir>/world-<ts>/} on the
+ * internal disk. That produced multi-GB uncompressed copies (an 18 GB one
+ * was found in the wild) and was the source of the disk-fill problem.
+ *
+ * <p>It now shells out to the bundled {@code fe-backup.sh} script, which
+ * streams {@code tar | gzip} directly to the external drive as three
+ * separate archives (world, playerdata, server) plus a {@code manifest.json},
+ * with an RCON save-off / save-all flush / save-on bracket and built-in
+ * age + free-space retention. No uncompressed intermediate is ever written.
+ * The same script powers the web portal's manual backups and rollback list,
+ * so both surfaces produce an identical, interchangeable backup format.
+ *
+ * <p>The public API ({@link #runBackup()}, {@link #sweepStalePartials()},
+ * {@link #fromConfig}) is unchanged so the existing App.java wiring
+ * (pre-stop, hourly scheduler) keeps working with no call-site changes.
  */
 public final class BackupService {
 
     private static final Logger LOG = LoggerFactory.getLogger("FatherEye-Backup");
-    /** Pnl-54 (audit fix, 2026-04-27): switched from SimpleDateFormat
-     *  (mutable, not thread-safe) to DateTimeFormatter (immutable,
-     *  thread-safe). Pre-Pnl-54 the only caller was the pre-stop path
-     *  so the race was latent; Pnl-54 introduced an hourly executor
-     *  that could collide with a manual Stop. Three audits flagged
-     *  the race independently. Millisecond precision in the folder
-     *  name disambiguates same-second collisions between two panel
-     *  instances (or hourly + pre-stop firing within the same
-     *  second). */
-    private static final DateTimeFormatter TS_FOLDER =
-            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneId.systemDefault());
-    /** Pnl-54: parsing variant that tolerates the legacy
-     *  "yyyyMMdd-HHmmss" format too, so retention sweeps work on
-     *  pre-Pnl-54 backup folders. */
-    private static final DateTimeFormatter TS_LEGACY =
-            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
+
+    /** Default external destination if none configured. */
+    public static final String DEFAULT_EXTERNAL_DIR = "/Volumes/Server Backups/backups";
 
     private final Path serverDir;
-    private final Path backupRoot;
-    private final int retainCount;
-    private final boolean includeConfigs;
-    private final boolean includeMods;
-    /** Pnl-54 (2026-04-27): age-based retention in days. Backups
-     *  older than this many days are deleted after every backup.
-     *  Zero or negative disables age-based retention; only
-     *  retainCount applies. The user requested 14-day retention. */
+    private final Path externalBackupDir;
     private final int retainDays;
+    private final int minFreeGb;
 
-    public BackupService(Path serverDir, Path backupRoot, int retainCount,
-                         boolean includeConfigs, boolean includeMods) {
-        this(serverDir, backupRoot, retainCount, includeConfigs, includeMods, 0);
-    }
-
-    public BackupService(Path serverDir, Path backupRoot, int retainCount,
-                         boolean includeConfigs, boolean includeMods, int retainDays) {
+    public BackupService(Path serverDir, Path externalBackupDir, int retainDays, int minFreeGb) {
         this.serverDir = serverDir;
-        this.backupRoot = backupRoot;
-        this.retainCount = retainCount;
-        this.includeConfigs = includeConfigs;
-        this.includeMods = includeMods;
+        this.externalBackupDir = externalBackupDir;
         this.retainDays = retainDays;
-    }
-
-    public Path runBackup() throws IOException {
-        // Mac fork (audit 7 P1, audit 10 B1): refuse to run when
-        // backupRoot is empty. Paths.get("") resolves to cwd, which
-        // on a Finder-launched .app is "/" — runBackup would then
-        // try to write world-<ts> to root and fail with
-        // AccessDeniedException. The Setup wizard fills in a real
-        // path; fresh installs without setup get an early-return
-        // with a clear log line.
-        if (backupRoot == null || backupRoot.toString().isEmpty()) {
-            LOG.warn("backup skipped: backupDir is not configured");
-            return null;
-        }
-        Files.createDirectories(backupRoot);
-        // Pnl-54 (audit fix): DateTimeFormatter is immutable / thread-
-        // safe so concurrent hourly + pre-stop runs cannot corrupt
-        // the format buffer. Millisecond precision so two backups
-        // firing within the same second produce distinct folder
-        // names (multi-panel + edge case where hourly tick coincides
-        // with a manual Stop click).
-        String stamp = TS_FOLDER.format(Instant.now());
-        Path target = backupRoot.resolve("world-" + stamp);
-        // Pnl-58 (2026-04-27): copy into a "world-<ts>.partial" folder
-        // and atomically rename to the final name only after every
-        // copyTree succeeds. Without this, a panel crash mid-copy
-        // (OOM, power loss, java.exe terminated) left a half-
-        // populated "world-<ts>" folder indistinguishable from a
-        // valid backup; the next retention sweep enrolled it for
-        // retention and a user restoring from it would get half a
-        // world. The .partial suffix is filtered from retention and
-        // from the timestamp parser so partials never count.
-        Path partial = backupRoot.resolve("world-" + stamp + ".partial");
-        Files.createDirectories(partial);
-
-        copyTree(serverDir.resolve("world"), partial.resolve("world"));
-        if (includeConfigs) copyTree(serverDir.resolve("config"), partial.resolve("config"));
-        if (includeMods)    copyTree(serverDir.resolve("mods"), partial.resolve("mods"));
-
-        // Atomic rename within the same filesystem. backupRoot is
-        // always one volume per panel session, so ATOMIC_MOVE is
-        // safe. The final-name folder is timestamp-unique (ms
-        // precision), so a name collision would itself be a bug.
-        Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE);
-
-        applyRetention();
-        LOG.info("Backup completed: {}", target);
-        return target;
+        this.minFreeGb = minFreeGb;
     }
 
     /**
-     * Pnl-58 (2026-04-27): delete any "world-*.partial" folders
-     * older than 1 hour. Called once per panel start so a partial
-     * left from a previous-session crash gets cleaned up. The 1 h
-     * grace window ensures we don't delete a partial that another
-     * concurrent panel session is currently writing.
+     * Create one compressed backup on the external drive. Returns the
+     * backup directory path on success, or {@code null} if it was skipped
+     * (no destination configured / external volume not mounted).
+     *
+     * @throws IOException if the backup script fails (non-zero exit).
+     */
+    public Path runBackup() throws IOException {
+        return runBackup(null);
+    }
+
+    /** As {@link #runBackup()} with an optional human label. */
+    public Path runBackup(String label) throws IOException {
+        if (externalBackupDir == null || externalBackupDir.toString().isEmpty()) {
+            LOG.warn("backup skipped: externalBackupDir is not configured");
+            return null;
+        }
+        // The external volume must be mounted: its parent (the volume mount
+        // point) must exist as a directory. Writing to an unmounted-volume
+        // stub on the internal disk is exactly what we are eliminating.
+        Path mountPoint = externalBackupDir.getParent();
+        if (mountPoint != null && !Files.isDirectory(mountPoint)) {
+            LOG.warn("backup skipped: external volume not mounted ({})", mountPoint);
+            return null;
+        }
+        Path script = ensureScript();
+        List<String> cmd = new ArrayList<>(List.of(
+                "/bin/bash", script.toString(),
+                "--server", serverDir.toString(),
+                "--dest", externalBackupDir.toString(),
+                "--retain-days", String.valueOf(retainDays),
+                "--min-free-gb", String.valueOf(minFreeGb)));
+        if (label != null && !label.isBlank()) { cmd.add("--label"); cmd.add(label); }
+
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String lastLine = "";
+        String backupDir = null;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                lastLine = line;
+                // The script emits the result path with an unambiguous
+                // marker; don't rely on the last line, since stderr (merged
+                // in via redirectErrorStream) can interleave after it.
+                if (line.startsWith("FE_BACKUP_DIR=")) {
+                    backupDir = line.substring("FE_BACKUP_DIR=".length()).trim();
+                }
+                LOG.debug("[fe-backup] {}", line);
+            }
+        } finally {
+            // Always reap the child even if reading threw, so we never leak
+            // a zombie process or leave waitFor unreachable.
+            try {
+                int rc = p.waitFor();
+                if (rc != 0) {
+                    throw new IOException("backup script exit " + rc + " (" + lastLine + ")");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                p.destroyForcibly();
+                throw new IOException("backup interrupted");
+            }
+        }
+        LOG.info("Backup completed: {}", backupDir != null ? backupDir : lastLine);
+        return backupDir != null ? Paths.get(backupDir) : null;
+    }
+
+    /**
+     * Remove any {@code *.partial} directories the script may have left on
+     * the external drive after an interrupted run. The script cleans up its
+     * own partial on failure, so this is a defensive backstop only.
      */
     public void sweepStalePartials() {
-        // Mac fork (audit 10 B1): same empty-path guard as runBackup.
-        if (backupRoot == null || backupRoot.toString().isEmpty()) return;
-        if (!Files.isDirectory(backupRoot)) return;
+        if (externalBackupDir == null || !Files.isDirectory(externalBackupDir)) return;
         long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
-        try (Stream<Path> kids = Files.list(backupRoot)) {
+        try (var kids = Files.list(externalBackupDir)) {
             kids.filter(Files::isDirectory)
                     .filter(p -> p.getFileName().toString().endsWith(".partial"))
                     .filter(p -> {
@@ -147,147 +152,56 @@ public final class BackupService {
         }
     }
 
-    // (deleteTree already defined later in this class for retention sweeps;
-    // sweepStalePartials reuses that helper.)
+    // ---- script extraction --------------------------------------------
 
-    private void copyTree(Path src, Path dst) throws IOException {
-        if (!Files.isDirectory(src)) return;
-        Files.walkFileTree(src, new SimpleFileVisitor<Path>() {
-            @Override public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                Path target = dst.resolve(src.relativize(dir).toString());
-                Files.createDirectories(target);
-                return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                Path target = dst.resolve(src.relativize(file).toString());
-                String name = file.getFileName().toString();
-                // Skip locked / per-session files that can't be safely
-                // copied while the server is still running. session.lock is
-                // held by Forge for the world's lifetime; *.tmp / *.lock /
-                // sqlite WAL files can be torn or in-flight. Levelling all
-                // exclusions here lets the rest of the world copy
-                // succeed instead of aborting on the first failure.
-                if (name.equals("session.lock")
-                        || name.endsWith(".lock")
-                        || name.endsWith(".tmp")
-                        || name.endsWith("-shm")
-                        || name.endsWith("-wal")) {
-                    return FileVisitResult.CONTINUE;
-                }
-                try {
-                    Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
-                } catch (IOException ioe) {
-                    // Best-effort: log and continue. A single locked file
-                    // shouldn't kill the backup of every other file.
-                    LOG.warn("backup skip {} ({})", file, ioe.getMessage());
-                }
-                return FileVisitResult.CONTINUE;
-            }
-            @Override public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                LOG.warn("backup visit failed {} ({})", file, exc.getMessage());
-                return FileVisitResult.CONTINUE;
-            }
-        });
-    }
+    private static volatile Path cachedScript;
 
-    private void applyRetention() {
-        try (Stream<Path> kids = Files.list(backupRoot)) {
-            List<Path> backups = new ArrayList<>();
-            kids.filter(Files::isDirectory)
-                    .filter(p -> p.getFileName().toString().startsWith("world-"))
-                    .filter(p -> !p.getFileName().toString().endsWith(".partial"))
-                    .forEach(backups::add);
-            // Sort newest-first so retainCount keeps the latest N.
-            backups.sort(Comparator.comparing((Path p) -> p.getFileName().toString()).reversed());
-
-            // Pnl-54 (2026-04-27): age-based retention. Anything
-            // older than retainDays gets deleted regardless of
-            // retainCount. The two rules combine: a backup must
-            // survive BOTH (be one of the most recent retainCount
-            // AND be younger than retainDays) to be kept.
-            long ageCutoffMs = retainDays > 0
-                    ? System.currentTimeMillis() - (long) retainDays * 24L * 60L * 60L * 1000L
-                    : Long.MIN_VALUE; // disabled
-            int kept = 0;
-            int deletedByCount = 0, deletedByAge = 0;
-            for (Path backup : backups) {
-                long mtimeMs = backupTimestamp(backup);
-                boolean tooOld = retainDays > 0 && mtimeMs < ageCutoffMs;
-                boolean overCount = retainCount > 0 && kept >= retainCount;
-                if (tooOld || overCount) {
-                    try {
-                        deleteTree(backup);
-                        if (tooOld) deletedByAge++;
-                        else deletedByCount++;
-                    } catch (IOException ioe) {
-                        LOG.warn("retention delete {} failed: {}", backup.getFileName(), ioe.getMessage());
-                    }
-                } else {
-                    kept++;
-                }
+    private Path ensureScript() throws IOException {
+        Path c = cachedScript;
+        if (c != null && Files.isRegularFile(c)) return c;
+        synchronized (BackupService.class) {
+            if (cachedScript != null && Files.isRegularFile(cachedScript)) return cachedScript;
+            Path dir = PlatformPaths.appDataDir().resolve("scripts");
+            Files.createDirectories(dir);
+            Path target = dir.resolve("fe-backup.sh");
+            try (InputStream in = BackupService.class.getResourceAsStream("/scripts/fe-backup.sh")) {
+                if (in == null) throw new IOException("bundled fe-backup.sh missing from panel jar");
+                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             }
-            if (deletedByAge > 0 || deletedByCount > 0) {
-                LOG.info("Retention applied: kept {} backups, deleted {} by age (>{} days), {} by count (>{}).",
-                        kept, deletedByAge, retainDays, deletedByCount, retainCount);
-            }
-        } catch (IOException e) {
-            LOG.warn("retention failed: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * Pnl-54 (2026-04-27): parse the timestamp out of a backup
-     * folder name "world-yyyyMMdd-HHmmss". Falls back to the
-     * folder's mtime on parse failure (e.g. user renamed it). The
-     * filename-derived timestamp is preferred because it survives
-     * file copies / rsync that would reset mtime.
-     */
-    private static long backupTimestamp(Path backup) {
-        String name = backup.getFileName().toString();
-        if (name.startsWith("world-")) {
-            String stamp = name.substring("world-".length());
-            // Pnl-54 (audit fix): try the new ms-precision format
-            // first, then fall back to the legacy "yyyyMMdd-HHmmss"
-            // for pre-Pnl-54 folders. DateTimeFormatter is
-            // thread-safe so no synchronization required.
             try {
-                LocalDateTime ldt = LocalDateTime.parse(stamp, TS_FOLDER);
-                return ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-            } catch (Exception ignoredNew) {
-                try {
-                    LocalDateTime ldt = LocalDateTime.parse(stamp, TS_LEGACY);
-                    return ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-                } catch (Exception ignoredLegacy) {
-                    // fall through to mtime
-                }
+                Set<PosixFilePermission> perms = EnumSet.of(
+                        PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.OTHERS_READ);
+                Files.setPosixFilePermissions(target, perms);
+            } catch (UnsupportedOperationException ignored) {
+                // non-POSIX FS; bash is invoked explicitly so +x is optional.
             }
-        }
-        try {
-            return Files.getLastModifiedTime(backup).toMillis();
-        } catch (IOException ioe) {
-            return 0L;
+            cachedScript = target;
+            return target;
         }
     }
 
     private void deleteTree(Path root) throws IOException {
-        Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                Files.deleteIfExists(file); return FileVisitResult.CONTINUE;
+        Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<>() {
+            @Override public java.nio.file.FileVisitResult visitFile(
+                    Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file); return java.nio.file.FileVisitResult.CONTINUE;
             }
-            @Override public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                Files.deleteIfExists(dir); return FileVisitResult.CONTINUE;
+            @Override public java.nio.file.FileVisitResult postVisitDirectory(
+                    Path dir, IOException exc) throws IOException {
+                Files.deleteIfExists(dir); return java.nio.file.FileVisitResult.CONTINUE;
             }
         });
     }
 
     public static BackupService fromConfig(io.fathereye.panel.config.AppConfig cfg) {
+        String ext = cfg.backup.externalBackupDir;
+        if (ext == null || ext.isEmpty()) ext = DEFAULT_EXTERNAL_DIR;
         return new BackupService(
                 Paths.get(cfg.serverRuntime.workingDir),
-                Paths.get(cfg.backup.backupDir),
-                cfg.backup.retainCount,
-                cfg.backup.includeConfigs,
-                cfg.backup.includeMods,
-                // Pnl-54: pass the new age-based retention.
-                cfg.backup.retainDays);
+                Paths.get(ext),
+                cfg.backup.retainDays,
+                cfg.backup.minFreeGb);
     }
 }
