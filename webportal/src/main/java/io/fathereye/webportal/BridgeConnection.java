@@ -11,8 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -92,13 +92,45 @@ public final class BridgeConnection {
 
     private synchronized void ensureConnected() {
         if (connected) return;
-        try {
-            Optional<MarkerDiscovery.Marker> m = MarkerDiscovery.discoverFirst();
-            if (!m.isPresent()) {
-                return; // no bridge running yet; try again on the next tick
+        // Try EVERY live marker newest-first, not just the single newest one.
+        // A marker whose PID is still alive but whose TCP socket is dead (e.g. a
+        // server mid-shutdown, or a second instance that crashed without cleanup)
+        // must NOT block us from reaching a healthy bridge listed in another
+        // marker. Each failed attempt prunes the offending marker file so a
+        // stale entry can never wedge the portal on subsequent ticks.
+        List<MarkerDiscovery.Marker> markers = MarkerDiscovery.discover();
+        if (markers.isEmpty()) {
+            return; // no bridge running yet; try again on the next tick
+        }
+        for (MarkerDiscovery.Marker marker : markers) {
+            if (tryMarker(marker)) {
+                return; // connected; stop trying remaining markers
             }
-            MarkerDiscovery.Marker marker = m.get();
-            PipeClient pc = PipeClient.forMarker(marker);
+        }
+    }
+
+    /**
+     * Attempt a full connect+handshake+subscribe against one marker. Returns
+     * true on success (state published, listeners notified). On any failure the
+     * partial client is closed and the unreachable marker file is pruned so it
+     * stops shadowing healthier markers on later reconnect ticks.
+     */
+    private boolean tryMarker(MarkerDiscovery.Marker marker) {
+        // Defensively tear down any prior client/reader before opening a new one.
+        // ensureConnected() only calls us while disconnected, but a reader thread
+        // that exited via onDisconnect() may still be finishing; closing the old
+        // handles here guarantees we never leak a socket or orphan a reader thread
+        // when we publish the new connection below.
+        PipeReader oldReader = this.pipeReader;
+        PipeClient oldClient = this.pipeClient;
+        if (oldReader != null) { try { oldReader.stop(); } catch (Throwable ignored) {} }
+        if (oldClient != null) { try { oldClient.close(); } catch (Throwable ignored) {} }
+        this.pipeReader = null;
+        this.pipeClient = null;
+
+        PipeClient pc = null;
+        try {
+            pc = PipeClient.forMarker(marker);
             pc.connect();
             PipeClient.WelcomeInfo info = pc.handshake(PORTAL_VERSION);
 
@@ -128,11 +160,44 @@ public final class BridgeConnection {
             for (Listener l : listeners) {
                 try { l.onConnected(welcomeJson); } catch (Throwable t) { LOG.warn("listener onConnected failed", t); }
             }
+            return true;
         } catch (Exception e) {
-            LOG.info("Bridge connect attempt failed: {}", e.getMessage());
-            connected = false;
-            PipeClient pc = pipeClient;
+            String addr = marker.address != null ? marker.address : marker.pipeName;
+            LOG.info("Bridge connect attempt to marker {} ({}) failed: {}; pruning marker",
+                    addr, marker.markerPath, e.getMessage());
             if (pc != null) { pc.close(); }
+            pruneMarker(marker);
+            return false;
+        }
+    }
+
+    /**
+     * Delete an unreachable marker file, but ONLY when its advertising process is
+     * no longer alive. This is the precise fix for the original wedge: a marker
+     * whose PID died without cleanup (or whose socket is dead) used to shadow a
+     * healthy bridge listed in another marker. We never prune a marker whose PID
+     * is still running, so a genuinely-live-but-momentarily-busy bridge is left
+     * intact and simply retried on the next 5 s tick. Best effort; a failure is
+     * logged at debug and retried next tick. A live bridge that we prune by race
+     * re-advertises on its next marker write, so even an over-eager prune self-heals.
+     */
+    private void pruneMarker(MarkerDiscovery.Marker marker) {
+        if (marker.markerPath == null) return;
+        if (marker.pid > 0) {
+            java.util.Optional<ProcessHandle> ph = ProcessHandle.of(marker.pid);
+            if (ph.isPresent() && ph.get().isAlive()) {
+                // Process is alive but we could not complete the handshake right now
+                // (e.g. server still starting, GC pause). Keep the marker and retry.
+                LOG.debug("not pruning marker {}: pid {} still alive; will retry",
+                        marker.markerPath, marker.pid);
+                return;
+            }
+        }
+        try {
+            java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(marker.markerPath));
+            LOG.debug("pruned dead marker {}", marker.markerPath);
+        } catch (Exception ex) {
+            LOG.debug("could not prune marker {}: {}", marker.markerPath, ex.getMessage());
         }
     }
 

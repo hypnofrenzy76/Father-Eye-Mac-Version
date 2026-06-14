@@ -66,6 +66,7 @@ public final class WebPortalAssets {
             <button id="btnStop" class="danger">Stop</button>
             <button id="btnLogout" onclick="location.href='/logout'">Sign out</button>
           </header>
+          <div id="connBanner" class="conn-banner">Connecting to the server bridge...</div>
           <div id="alertBanner" class="alert hidden"></div>
           <nav id="tabs">
             <button data-tab="stats" class="active">Stats</button>
@@ -76,6 +77,7 @@ public final class WebPortalAssets {
             <button data-tab="map">Map</button>
             <button data-tab="world">World</button>
             <button data-tab="backups">Backups</button>
+            <button data-tab="rollback">Rollback</button>
             <button data-tab="arcanum" id="arcanumTab" class="hidden">Arcanum</button>
           </nav>
           <main>
@@ -178,20 +180,25 @@ public final class WebPortalAssets {
               </div>
             </section>
 
-            <!-- BACKUPS -->
+            <!-- BACKUPS (create + browse; live per-player restore works while running) -->
             <section id="tab-backups" class="tab">
+              <div class="section-head">
+                <h2>Backups</h2>
+                <p class="meter">Create a compressed snapshot of the world and player data on the
+                  external drive. Each backup keeps world and player data as independent archives so
+                  either can be rolled back on its own from the Rollback tab. To restore a single
+                  player's full state into the live server, use "Live Players" below.</p>
+              </div>
               <div class="backup-toolbar">
                 <input id="bkLabel" type="text" placeholder="Optional label for this backup">
-                <button id="bkRun">Back up now</button>
+                <button id="bkRun" class="primary">Back up now</button>
                 <button id="bkRefresh">Refresh list</button>
                 <span id="bkDrive" class="meter"></span>
               </div>
               <div id="bkJob" class="bk-job hidden"></div>
-              <p class="meter">Backups are compressed and stored on the external drive. World and player data
-                can be restored independently. Rollback requires the server to be stopped.</p>
               <table id="backupsTable">
                 <thead><tr><th>Created</th><th>Label</th><th>World</th><th>Contents</th>
-                  <th>Size</th><th>Restore</th></tr></thead>
+                  <th>Size</th><th>Live restore</th></tr></thead>
                 <tbody></tbody>
               </table>
 
@@ -213,6 +220,26 @@ public final class WebPortalAssets {
                   </table>
                 </div>
               </div>
+            </section>
+
+            <!-- ROLLBACK (whole-world / whole-playerdata restore; server must be stopped) -->
+            <section id="tab-rollback" class="tab">
+              <div class="section-head">
+                <h2>Rollback</h2>
+                <p class="rb-warn">Rollback overwrites the live world and/or player data with a backup.
+                  The server must be STOPPED first. A safety snapshot of the current state is taken
+                  automatically before anything is overwritten, so a bad rollback can itself be undone.</p>
+              </div>
+              <div class="backup-toolbar">
+                <button id="rbRefresh">Refresh list</button>
+                <span id="rbState" class="meter"></span>
+              </div>
+              <div id="rbJob" class="bk-job hidden"></div>
+              <table id="rollbackTable">
+                <thead><tr><th>Created</th><th>Label</th><th>World</th><th>Contents</th>
+                  <th>Size</th><th>Restore</th></tr></thead>
+                <tbody></tbody>
+              </table>
             </section>
 
             <!-- ARCANUM -->
@@ -275,6 +302,18 @@ public final class WebPortalAssets {
         button.danger{background:#3a201e;border-color:#5a302c;color:#ffb4ae}
         button.danger:hover{background:#4a2826}
         .alert{padding:10px 16px;background:#4a3a12;color:#ffe9b0;border-bottom:1px solid #6a5420;cursor:pointer}
+        /* connection status banner */
+        .conn-banner{padding:8px 16px;font-size:13px;font-weight:600;border-bottom:1px solid var(--line);
+          display:block}
+        .conn-banner.conn-connecting{background:#33373f;color:#cfd6e2}
+        .conn-banner.conn-offline{background:#3d1816;color:#ffb4ae;border-bottom-color:#5a302c}
+        .conn-banner.conn-ok{display:none}
+        button.primary{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+        button.primary:hover{background:#d8b03a}
+        .section-head{margin-bottom:12px}
+        .section-head h2{margin:0 0 4px;font-size:18px;color:var(--accent)}
+        .rb-warn{margin:0;padding:10px 12px;border-radius:8px;background:#3d1816;border:1px solid #5a302c;
+          color:#ffd0cb;font-size:13px}
         /* tabs */
         #tabs{display:flex;gap:2px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);
           overflow-x:auto}
@@ -395,6 +434,23 @@ public final class WebPortalAssets {
           const b = document.getElementById('stateBadge');
           b.className = 'badge ' + (state==='running'?'state-running':state==='disconnected'?'state-stopped':'state-unknown');
           b.textContent = 'Server: ' + (state==='running'?'RUNNING':state==='disconnected'?'OFFLINE':'...');
+          setConnBanner(state);
+        }
+        // A persistent banner so blank tabs are never a mystery: it explains
+        // whether we are still connecting, connected, or the server is offline.
+        function setConnBanner(state){
+          const el = document.getElementById('connBanner');
+          if(!el) return;
+          if(state==='running'){
+            el.className = 'conn-banner conn-ok';
+            el.textContent = '';
+          } else if(state==='disconnected'){
+            el.className = 'conn-banner conn-offline';
+            el.textContent = 'Server is offline. Live tabs will populate automatically once the server is running.';
+          } else {
+            el.className = 'conn-banner conn-connecting';
+            el.textContent = 'Connecting to the server bridge...';
+          }
         }
         function onWelcome(w){
           setBadge('running');
@@ -680,23 +736,46 @@ public final class WebPortalAssets {
             drive.textContent = (meta.mounted?'Drive OK':'DRIVE NOT MOUNTED')+' - free '+bkBytes(meta.freeBytes)+
               ' - '+(meta.externalDir||'');
             drive.style.color = meta.mounted ? '#8b93a3' : '#d4504a';
-            const tb=document.querySelector('#backupsTable tbody'); tb.innerHTML='';
-            (data.backups||[]).forEach(bk=>{
-              const tr=document.createElement('tr');
+            const list=(data.backups||[]);
+            const bkTb=document.querySelector('#backupsTable tbody'); bkTb.innerHTML='';
+            const rbTb=document.querySelector('#rollbackTable tbody'); rbTb.innerHTML='';
+            const rbState=document.getElementById('rbState');
+            const running=document.getElementById('stateBadge').classList.contains('state-running');
+            rbState.textContent = running
+              ? 'Server is RUNNING - stop it before a whole-world or whole-playerdata rollback.'
+              : 'Server is stopped - rollback is safe to run.';
+            rbState.style.color = running ? '#d4504a' : '#8b93a3';
+            if(!list.length){
+              bkTb.innerHTML='<tr><td colspan="6" class="meter">No backups yet.</td></tr>';
+              rbTb.innerHTML='<tr><td colspan="6" class="meter">No backups available to roll back to.</td></tr>';
+            }
+            list.forEach(bk=>{
               const contents=[]; if(bk.hasWorld)contents.push('world');
                 if(bk.hasPlayerData)contents.push('players'); if(bk.hasServer)contents.push('server');
-              tr.innerHTML=td(bkDate(bk.createdEpoch))+td(bk.label||'')+td(bk.worldName||'')+
+              const head=td(bkDate(bk.createdEpoch))+td(bk.label||'')+td(bk.worldName||'')+
                 td(contents.join(', ')+(bk.kind==='legacy'?' (legacy)':''))+td(bkBytes(bk.totalBytes));
-              const cell=document.createElement('td');
-              if(bk.kind==='structured'){
-                if(bk.hasWorld){ const wb=btn('World',()=>bkRollback(bk.id,'world')); wb.className='bk-restore-world'; cell.appendChild(wb); }
-                if(bk.hasPlayerData){ const pb=btn('Players',()=>bkRollback(bk.id,'playerdata')); pb.className='bk-restore-player'; cell.appendChild(pb); }
-                if(bk.hasWorld&&bk.hasPlayerData){ const bb=btn('Both',()=>bkRollback(bk.id,'both')); bb.className='bk-restore-both'; cell.appendChild(bb); }
-                if(bk.hasPlayerData){ const lb=btn('Live Players',()=>bkOpenPlayers(bk.id,bk.label)); lb.className='bk-restore-live'; cell.appendChild(lb); }
+
+              // --- Backups tab row: create-side view; only live per-player restore here ---
+              const bkTr=document.createElement('tr'); bkTr.innerHTML=head;
+              const bkCell=document.createElement('td');
+              if(bk.kind==='structured' && bk.hasPlayerData){
+                const lb=btn('Live Players',()=>bkOpenPlayers(bk.id,bk.label)); lb.className='bk-restore-live'; bkCell.appendChild(lb);
               } else {
-                cell.innerHTML='<span class="meter">manual restore</span>';
+                bkCell.innerHTML='<span class="meter">'+(bk.kind==='structured'?'world only':'manual restore')+'</span>';
               }
-              tr.appendChild(cell); tb.appendChild(tr);
+              bkTr.appendChild(bkCell); bkTb.appendChild(bkTr);
+
+              // --- Rollback tab row: whole-world / whole-playerdata / both restore ---
+              const rbTr=document.createElement('tr'); rbTr.innerHTML=head;
+              const rbCell=document.createElement('td');
+              if(bk.kind==='structured'){
+                if(bk.hasWorld){ const wb=btn('World',()=>bkRollback(bk.id,'world')); wb.className='bk-restore-world'; rbCell.appendChild(wb); }
+                if(bk.hasPlayerData){ const pb=btn('Players',()=>bkRollback(bk.id,'playerdata')); pb.className='bk-restore-player'; rbCell.appendChild(pb); }
+                if(bk.hasWorld&&bk.hasPlayerData){ const bb=btn('Both',()=>bkRollback(bk.id,'both')); bb.className='bk-restore-both'; rbCell.appendChild(bb); }
+              } else {
+                rbCell.innerHTML='<span class="meter">manual restore</span>';
+              }
+              rbTr.appendChild(rbCell); rbTb.appendChild(rbTr);
             });
           }catch(e){ toast('Backup list error: '+e.message); }
         }
@@ -763,15 +842,21 @@ public final class WebPortalAssets {
           }catch(e){ toast('Restore error: '+e.message); }
         }
         function bkRenderJob(j){
-          const el=document.getElementById('bkJob');
-          if(!j || j.type==='none'){ el.classList.add('hidden'); return; }
-          el.classList.remove('hidden');
-          el.classList.remove('running','ok','fail');
-          if(j.running) el.classList.add('running');
-          else if(j.ok===true) el.classList.add('ok');
-          else if(j.ok===false) el.classList.add('fail');
-          const logHtml = j.log ? '<pre>'+j.log.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre>' : '';
-          el.innerHTML='<strong>'+(j.message||'')+'</strong>'+logHtml;
+          // The same backup/rollback job feed drives the status panel on BOTH the
+          // Backups tab (#bkJob) and the Rollback tab (#rbJob) so a job started
+          // from either tab is visible no matter which one the operator is viewing.
+          ['bkJob','rbJob'].forEach(id=>{
+            const el=document.getElementById(id);
+            if(!el) return;
+            if(!j || j.type==='none'){ el.classList.add('hidden'); return; }
+            el.classList.remove('hidden');
+            el.classList.remove('running','ok','fail');
+            if(j.running) el.classList.add('running');
+            else if(j.ok===true) el.classList.add('ok');
+            else if(j.ok===false) el.classList.add('fail');
+            const logHtml = j.log ? '<pre>'+j.log.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</pre>' : '';
+            el.innerHTML='<strong>'+(j.message||'')+'</strong>'+logHtml;
+          });
         }
         async function bkPollJob(){
           try{
@@ -792,6 +877,7 @@ public final class WebPortalAssets {
         }
         document.getElementById('bkRun').onclick=bkRunNow;
         document.getElementById('bkRefresh').onclick=bkLoad;
+        document.getElementById('rbRefresh').onclick=bkLoad;
         document.getElementById('bkPmClose').onclick=bkClosePlayers;
         document.getElementById('bkPlayerModal').addEventListener('click',e=>{
           if(e.target.id==='bkPlayerModal') bkClosePlayers();
@@ -807,6 +893,7 @@ public final class WebPortalAssets {
           if(b.dataset.tab==='stats') drawTps();
           if(b.dataset.tab==='arcanum') loadArcanum();
           if(b.dataset.tab==='backups'){ bkLoad(); bkPollJob(); }
+          if(b.dataset.tab==='rollback'){ bkLoad(); bkPollJob(); }
         });
 
         // ---- helpers ----

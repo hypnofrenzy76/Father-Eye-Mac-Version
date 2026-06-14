@@ -2,6 +2,56 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: web panel blank-tabs fix + dedicated Backups/Rollback tabs (Web-05, Web-06)
+
+- **All web tabs blank, no console.** The browser portal showed nothing on
+  every live tab (Stats/Players/Mobs/Mods/Map) and no console while the
+  server ran. Root cause was **not** the data path (Web-02 already fixed
+  snapshot unwrapping) but two operational faults:
+  - **Stale build.** The deployed `webportal/build/install` predated the
+    Backups tab — so the Backups/Rollback UI literally was not in the
+    served HTML.
+  - **A dead bridge marker shadowing a healthy one.** `BridgeConnection`
+    only dialled `MarkerDiscovery.discoverFirst()` (the single newest
+    marker). A marker whose PID was still alive but whose TCP socket was
+    dead (server mid-shutdown, or a crashed second instance) wedged the
+    portal forever; the browser saw a permanently disconnected portal, so
+    every live tab stayed blank.
+- **Fix 1 — resilient connect (`BridgeConnection.java`).**
+  `ensureConnected()` now iterates **all** live markers newest-first and
+  connects to the first that completes connect+handshake+subscribe (new
+  `tryMarker()`), so a dead-socket marker can no longer block a healthy
+  one listed in another marker. `tryMarker()` defensively tears down any
+  prior reader/client before publishing the new connection (no socket
+  leaks, no orphaned reader thread). New `pruneMarker()` deletes an
+  unreachable marker **only when its advertising PID is no longer alive**,
+  so a genuinely-live-but-busy bridge (still starting, GC pause) is kept
+  and retried on the next 5 s tick.
+- **Fix 2 — UI (`WebPortalAssets.java`).**
+  - **Connection banner.** A persistent banner now states
+    connecting / offline / connected, so a not-yet-connected portal is
+    never a silent blank screen.
+  - **Backups and Rollback are now two dedicated tabs.** *Backups* covers
+    create-a-backup plus per-player **live** restore ("Live Players"
+    modal: inject one player's full saved state into the running server
+    with no disconnect). *Rollback* covers whole-world / whole-playerdata
+    / both restore, with a server-must-be-stopped warning and a
+    safety-snapshot note. The backup list renders into both tables and the
+    job status mirrors into both tabs.
+  - **Per-player inventory rollback** is wired through the existing
+    `/api/backup/players` + `/api/player/restore` endpoints (Brg-27).
+- **Vetting.** `:webportal:test` green; an empirical end-to-end test
+  (mock TCP bridge + RFC 6455 WebSocket client) confirmed
+  status/welcome/`tps_topic`/`console_log` flow bridge→portal→browser,
+  run **twice** (before and after hardening). Triple-audited by 3 parallel
+  reviewers (connection robustness, JS/UI, API contract); the two
+  connection findings (orphaned reader, prune-of-live-bridge) were both
+  hardened. Fresh jar/zip/tar + `build/install` rebuilt and verified via
+  `javap`; the portal runs directly from `build/install`, so that is the
+  deployed artifact. The panel `Father Eye.app` bundle contains no
+  webportal code and was not touched. No version bump (portal-only
+  behavior + additive UI on 0.3.3-mac.1).
+
 ## 2026-06-14, 0.3.3-mac.1: panel Stop button regression fix (Pnl-75)
 
 - **Stop button looked dead.** After the Bkp-01 backup overhaul, the
