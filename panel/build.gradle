@@ -35,6 +35,14 @@ javafx {
 
 dependencies {
     implementation project(':mapcore')
+    // Pnl-77b/Web-07b: the panel hosts the Web Portal in-process (the bundled
+    // jpackage runtime has no java launcher to fork a child JVM), so the
+    // webportal module is a direct dependency. installDist copies
+    // fathereye-webportal-*.jar into install/panel/lib, which jpackage then
+    // bundles via --input. The portal's transitive deps (jackson, slf4j,
+    // logback) are already panel dependencies at the same versions, so no new
+    // jars are introduced and there is no duplicate-version conflict.
+    implementation project(':webportal')
 
     implementation "net.java.dev.jna:jna-platform:${jnaVersion}"
     implementation "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"

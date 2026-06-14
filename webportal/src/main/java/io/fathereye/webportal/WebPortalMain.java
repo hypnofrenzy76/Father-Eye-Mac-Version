@@ -37,6 +37,11 @@ public final class WebPortalMain {
     private final PlayerRestoreService playerRestore = new PlayerRestoreService();
     private final CopyOnWriteArrayList<WsSession> sessions = new CopyOnWriteArrayList<>();
 
+    /** Pnl-77b/Web-07b: live HTTP server handle, set by {@link #startEmbedded}
+     *  so the panel can {@link #stop()} the portal in-process when the server
+     *  shuts down. Null until started. */
+    private volatile HttpServerCore httpServer;
+
     public static void main(String[] args) throws Exception {
         int port = 8765;
         String host = "0.0.0.0";
@@ -58,7 +63,40 @@ public final class WebPortalMain {
         new WebPortalMain().run(host, port);
     }
 
+    /**
+     * Standalone entry: start the portal, register a JVM shutdown hook, then
+     * park the calling thread forever. Used by {@link #main} and the
+     * generated {@code bin/webportal} launcher.
+     */
     private void run(String host, int port) throws IOException {
+        startEmbedded(host, port);
+
+        Runtime.getRuntime().addShutdownHook(new Thread(this::stop, "FatherEye-WebPortal-Shutdown"));
+
+        // Park the main thread.
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Pnl-77b/Web-07b: start the bridge connection and HTTP server WITHOUT
+     * parking the calling thread and WITHOUT registering a JVM shutdown hook.
+     * Lets the Father Eye panel run the portal in-process (the bundled jpackage
+     * runtime has no {@code java} launcher to fork, so the portal cannot be a
+     * child process) and drive its lifecycle via {@link #stop()} when the
+     * managed server stops. Both {@link HttpServerCore} and the bridge reader
+     * run on their own daemon threads, so control returns immediately.
+     *
+     * <p>Idempotent: a second call while already started is a no-op.
+     */
+    public synchronized void startEmbedded(String host, int port) throws IOException {
+        if (httpServer != null) {
+            LOG.info("Web portal already running; ignoring duplicate start.");
+            return;
+        }
         bridge.addListener(new BridgeConnection.Listener() {
             @Override public void onTopic(String kind, String topic, JsonNode payload) {
                 broadcastTopic(kind, topic, payload);
@@ -74,21 +112,36 @@ public final class WebPortalMain {
 
         HttpServerCore server = new HttpServerCore(host, port, this::route);
         server.start();
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            server.stop();
-            bridge.stop();
-        }));
+        this.httpServer = server;
 
         LOG.info("Father Eye Web Portal ready. Open it over Tailscale at http://<this-mac-tailscale-name>:{}", port);
         LOG.info("Bind host {} (use --host=127.0.0.1 to restrict to loopback).", host);
+    }
 
-        // Park the main thread.
-        try {
-            Thread.currentThread().join();
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt();
+    /**
+     * Pnl-77b/Web-07b: stop the HTTP server and bridge connection. Safe to
+     * call when never started or already stopped (no-op). Used by the panel
+     * when the managed server stops and by the standalone shutdown hook.
+     */
+    public synchronized void stop() {
+        // Close every live WebSocket first so the browser sockets and their
+        // daemon read threads are released now, rather than lingering until the
+        // next failed write. sendClose() is idempotent (CAS-guarded) and closes
+        // the underlying socket, which unblocks the parked readText() in each
+        // wsReadLoop; that loop's finally removes the session, so we also clear
+        // the list defensively in case a reader has already exited. (Triple
+        // audit 2026-06-14: convergent leak finding.)
+        for (WsSession s : sessions) {
+            try { s.ws.sendClose(); } catch (Throwable t) { LOG.debug("ws close failed", t); }
         }
+        sessions.clear();
+
+        HttpServerCore server = this.httpServer;
+        if (server != null) {
+            try { server.stop(); } catch (Throwable t) { LOG.warn("HTTP server stop failed", t); }
+            this.httpServer = null;
+        }
+        try { bridge.stop(); } catch (Throwable t) { LOG.warn("bridge stop failed", t); }
     }
 
     // ---- HTTP routing ----

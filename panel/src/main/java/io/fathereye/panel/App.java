@@ -84,6 +84,12 @@ public final class App extends Application {
 
     private ServerLauncher launcher;
     private Watchdog watchdog;
+    /** Pnl-77b/Web-07b: in-process Web Portal, started when the managed
+     *  server reaches RUNNING and stopped on STOPPED/CRASHED and panel exit
+     *  so the browser console at http://&lt;tailscale-name&gt;:8765 is up
+     *  exactly while a server is running. */
+    private final io.fathereye.panel.launcher.WebPortalLauncher webPortalLauncher =
+            new io.fathereye.panel.launcher.WebPortalLauncher();
     private io.fathereye.panel.history.MetricsDb metricsDb;
     private io.fathereye.panel.config.AppConfig appConfig;
     private io.fathereye.panel.alerts.AlertEngine alertEngine;
@@ -151,6 +157,11 @@ public final class App extends Application {
         // cover that path. Defer to a future Pnl-NN milestone if needed —
         // this hook covers the common case.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            // Pnl-77b/Web-07b: stop the in-process Web Portal first so its
+            // HTTP ServerSocket and bridge connection are released even if the
+            // panel JVM is dying via a signalled termination. Idempotent.
+            try { webPortalLauncher.stop(); }
+            catch (Throwable t) { LOG.warn("shutdown hook portal stop failed: {}", t.getMessage()); }
             try {
                 if (launcher != null && (launcher.state() == ServerLauncher.State.RUNNING
                         || launcher.state() == ServerLauncher.State.STARTING)) {
@@ -417,6 +428,13 @@ public final class App extends Application {
                     } else if (state == ServerLauncher.State.RUNNING) {
                         mainWindow.consolePane().onLogLine(
                                 asSyntheticLogLineNode("Bridge handshake complete; server is now ready to accept connections."));
+                        // Pnl-77b/Web-07b: the bridge handshake has completed,
+                        // so a live bridge marker now exists for the portal to
+                        // dial. Bring the in-process Web Portal up so the remote
+                        // browser console is reachable while the server runs.
+                        webPortalLauncher.start();
+                        mainWindow.consolePane().onLogLine(
+                                asSyntheticLogLineNode("Web Portal started on port 8765 (reachable over Tailscale at http://<this-mac>:8765)."));
                     } else if ((state == ServerLauncher.State.STOPPED
                                 || state == ServerLauncher.State.CRASHED)
                             && sessionStartMs > 0
@@ -448,6 +466,17 @@ public final class App extends Application {
                         }, "FatherEye-EvalWriter");
                         t.setDaemon(true);
                         t.start();
+                    }
+
+                    // Pnl-77b/Web-07b: tear the Web Portal down whenever the
+                    // server leaves the running set. Kept as its own
+                    // unconditional block (NOT folded into the evaluation
+                    // branch above, which is gated on sessionStartMs/
+                    // evaluationGenerator) so the portal is always stopped on
+                    // STOPPED/CRASHED. Idempotent: a no-op if never started.
+                    if (state == ServerLauncher.State.STOPPED
+                            || state == ServerLauncher.State.CRASHED) {
+                        webPortalLauncher.stop();
                     }
                 }
         );
@@ -736,6 +765,10 @@ public final class App extends Application {
     @Override
     public void stop() {
         LOG.info("Father Eye panel shutting down");
+        // Pnl-77b/Web-07b: stop the in-process Web Portal up front so its HTTP
+        // server and bridge connection are released before we tear down the
+        // launcher/pipe. Idempotent; no-op if no server session ran.
+        webPortalLauncher.stop();
         if (restartScheduler != null) restartScheduler.stop();
         // Pnl-54 (audit fix): graceful shutdown ordering. shutdown()
         // first stops accepting new tasks but lets in-flight backup

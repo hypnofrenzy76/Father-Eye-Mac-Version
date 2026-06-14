@@ -2,6 +2,50 @@
 
 All notable changes per session, newest first.
 
+## 2026-06-14, 0.3.3-mac.1: panel auto-starts the Web Portal with the server (Pnl-77b/Web-07b)
+
+- **The Father Eye panel now launches the Web Portal automatically.** Previously
+  nothing started the portal, and the packaged `Father Eye.app` did not even
+  bundle the webportal jar, so `http://<tailscale-name>:8765` was never served.
+  The panel now starts the portal in-process when the managed server reaches
+  RUNNING and stops it on STOPPED / CRASHED and on panel exit.
+- **In-process, not a child JVM.** The jpackage runtime bundled in `Father
+  Eye.app` is a jlink image stripped of its `bin/java` launcher (only
+  `libjli.dylib` survives), so there is no java binary to fork. The webportal
+  module is therefore a direct panel dependency and its `WebPortalMain` is
+  driven on background daemon threads.
+- **WebPortalMain lifecycle refactor.** Extracted the old blocking `run()` into
+  a non-blocking `startEmbedded(host, port)` plus a public `stop()`; the
+  standalone `bin/webportal` path still parks and registers its own shutdown
+  hook. A fresh `WebPortalMain` is constructed per start because its
+  `BridgeConnection` reconnect executor is single-shot (cannot be revived after
+  `stop()`); `WebPortalLauncher` (new) owns that fresh-instance-per-session
+  policy, is idempotent, and swallows start failures (for example a port-8765
+  BindException) so the Minecraft server lifecycle is never aborted.
+- **Triple Opus audit (convergent fix applied):** two of three auditors flagged
+  that `WebPortalMain.stop()` closed the HTTP server and bridge but left open
+  WebSocket sessions (and their daemon read threads) lingering until the next
+  failed write. `stop()` now closes every live `WsSession` (idempotent
+  `sendClose()` unblocks each parked `readText()`) and clears the session list.
+  Auditor false-positive (a TOCTOU in `startEmbedded`) was dismissed: both
+  methods are `synchronized` on the same monitor. `HttpServerCore.stop()`'s
+  `shutdownNow()` (no await) was reviewed and deliberately kept: request-handler
+  pool threads are daemon and short-lived, and hijacked WebSocket reads run on
+  their own threads now closed by the session fix.
+- **Packaging:** `implementation project(':webportal')` added to
+  `panel/build.gradle`. `installDist` copies `fathereye-webportal-0.3.3-mac.1.jar`
+  into `install/panel/lib`, which jpackage bundles via `--input`. The portal's
+  transitive deps (jackson, slf4j, logback) are already panel dependencies at
+  identical versions, and the three `scripts/fe-*.sh` resources are byte-identical
+  between the two jars, so there is no duplicate-version or resource conflict.
+- **Verified:** `:webportal:test` green; `:panel:jpackageMacApp` green; an
+  in-process E2E harness confirmed port 8765 binds on start, idempotent
+  duplicate-start, releases on stop, re-binds on restart (fresh instance), and a
+  `GET /` returns HTTP 200. Deployed the rebuilt bundle to
+  `/Applications/Father Eye.app` (webportal jar + `startEmbedded`/`stop` verified
+  inside the bundle). Operator password was rotated via `webportal
+  --set-password`.
+
 ## 2026-06-14, 0.3.3-mac.1: rebuild + deploy to new macOS paths (Dep-01)
 
 - **Rebuilt all outputs from commit `abe1bb8`.** Every artifact on disk predated
